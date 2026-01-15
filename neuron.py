@@ -153,27 +153,11 @@ class BiologicalNeuron:
         self.post_trace = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
         # Precompute decay factors (for efficiency)
-        self.decay_v = torch.tensor(
-            torch.exp(torch.tensor(-dt / tau_m)),
-            dtype=torch.float32,
-            device=self.device
-        )
-        self.decay_u = torch.tensor(
-            torch.exp(torch.tensor(-dt / tau_u)),
-            dtype=torch.float32,
-            device=self.device
-        )
-        self.decay_theta = torch.tensor(
-            torch.exp(torch.tensor(-dt / tau_theta)),
-            dtype=torch.float32,
-            device=self.device
-        )
-        self.decay_trace = torch.tensor(
-            torch.exp(torch.tensor(-dt / tau_trace)),
-            dtype=torch.float32,
-            device=self.device
-        )
-    
+        self.decay_v = torch.exp(torch.tensor(-dt / tau_m, dtype=torch.float32, device=self.device))
+        self.decay_u = torch.exp(torch.tensor(-dt / tau_u, dtype=torch.float32, device=self.device))
+        self.decay_theta = torch.exp(torch.tensor(-dt / tau_theta, dtype=torch.float32, device=self.device))
+        self.decay_trace = torch.exp(torch.tensor(-dt / tau_trace, dtype=torch.float32, device=self.device))
+
     def _init_learning_params(self):
         """
         Initialize learning and retention parameters.
@@ -322,118 +306,90 @@ class BiologicalNeuron:
 
     def stdp(self, input_spikes: torch.Tensor, output_spike: bool) -> None:
         """
-        Apply Spike-Timing-Dependent Plasticity (STDP) learning with advanced features:
-        - Adaptive learning rates (decay over time)
-        - Weight decay regularization
-        - Homeostatic plasticity
-        - Weight consolidation (prevent catastrophic forgetting)
+        Apply optimized Spike-Timing-Dependent Plasticity (STDP).
 
-        Hebbian learning rule:
-        - If pre-spike before post-spike (causal): LTP (strengthen)
-        - If post-spike before pre-spike (acausal): LTD (weaken)
+        OPTIMIZATIONS:
+        - Reduced homeostatic update frequency (every 500 steps instead of every step)
+        - Faster learning rate adaptation (every 200 steps)
+        - Simplified importance weight updates
+        - Removed redundant device checks
+        - Consolidated weight updates
 
         Args:
             input_spikes: Binary spike vector (0 or 1) for each input
-                         Automatically converted to GPU tensor if needed
         """
-        # Ensure learning parameters are initialized (for backward compatibility with saved brains)
+        # Ensure learning parameters are initialized
         if not hasattr(self, 'homeostatic_scale'):
             self._init_learning_params()
         
-        # Use no_grad context for weight updates (STDP doesn't need gradients)
         with torch.no_grad():
-            # Ensure input_spikes is a GPU tensor
+            # Convert input_spikes to tensor (fast path for common case)
             if not isinstance(input_spikes, torch.Tensor):
-                input_spikes = torch.tensor(
-                    input_spikes,
-                    dtype=torch.float32,
-                    device=self.device
-                )
+                input_spikes = torch.tensor(input_spikes, dtype=torch.float32, device=self.device)
             elif input_spikes.device != self.device:
                 input_spikes = input_spikes.to(self.device)
 
-            # Update pre-synaptic traces (exponential decay + spike)
+            # Update traces (exponential decay + spike)
             self.trace = self.trace * self.decay_trace + input_spikes
-
-            # Update post-synaptic trace (exponential decay)
             self.post_trace = self.post_trace * self.decay_trace
 
-            # Adaptive learning rate (decay over time for better convergence)
+            # Adaptive learning rate (update less frequently - every 200 steps)
             self.update_count += 1
-            if self.update_count % 100 == 0:  # Update every 100 steps
-                self.current_a_plus = self.a_plus * (self.learning_rate_decay ** (self.update_count / 100))
-                self.current_a_minus = self.a_minus * (self.learning_rate_decay ** (self.update_count / 100))
-                # Don't let learning rate go too low
-                self.current_a_plus = max(self.current_a_plus, self.a_plus * 0.1)
-                self.current_a_minus = max(self.current_a_minus, self.a_minus * 0.1)
+            if self.update_count % 200 == 0:
+                decay_factor = self.learning_rate_decay ** (self.update_count / 200)
+                self.current_a_plus = max(self.a_plus * decay_factor, self.a_plus * 0.1)
+                self.current_a_minus = max(self.a_minus * decay_factor, self.a_minus * 0.1)
 
-            # Track firing rate for homeostatic plasticity
+            # Homeostatic plasticity (update less frequently - every 500 steps)
             if output_spike:
                 self.firing_rate_history.append(1.0)
             else:
                 self.firing_rate_history.append(0.0)
             
-            # Keep only recent history (last 1000 updates)
-            if len(self.firing_rate_history) > 1000:
+            # Keep only recent history (last 500 updates - reduced from 1000)
+            if len(self.firing_rate_history) > 500:
                 self.firing_rate_history.pop(0)
             
-            # Update homeostatic scaling based on firing rate
-            if len(self.firing_rate_history) >= 100:
+            # Update homeostatic scaling less frequently (every 500 steps)
+            if len(self.firing_rate_history) >= 100 and self.update_count % 500 == 0:
                 recent_firing_rate = np.mean(self.firing_rate_history[-100:])
-                # If firing too much, reduce excitability; if too little, increase
                 if recent_firing_rate > self.target_firing_rate * 1.5:
-                    self.homeostatic_scale *= 0.99  # Reduce excitability
+                    self.homeostatic_scale *= 0.98  # Faster adjustment
                 elif recent_firing_rate < self.target_firing_rate * 0.5:
-                    self.homeostatic_scale *= 1.01  # Increase excitability
+                    self.homeostatic_scale *= 1.02  # Faster adjustment
                 self.homeostatic_scale = np.clip(self.homeostatic_scale, 0.5, 2.0)
 
-            # === STDP Weight Updates ===
+            # === OPTIMIZED STDP WEIGHT UPDATES ===
 
-            # Ensure importance_weights is on the correct device
-            if self.importance_weights.device != self.device:
-                self.importance_weights = self.importance_weights.to(self.device)
-            
-            # Ensure consolidated_weights is on the correct device
-            if hasattr(self, 'consolidated_weights') and isinstance(self.consolidated_weights, torch.Tensor):
-                if self.consolidated_weights.device != self.device:
-                    self.consolidated_weights = self.consolidated_weights.to(self.device)
+            # Combined weight update (reduce separate operations)
+            weight_delta = torch.zeros_like(self.weights)
 
             # LTD: Depression when input spikes AFTER output spike
             if torch.any(input_spikes > 0):
-                dw_minus = -self.current_a_minus * self.post_trace * input_spikes * self.homeostatic_scale
-                # Apply weight consolidation (protect important weights)
-                importance_factor = 1.0 / (1.0 + self.importance_weights)
-                dw_minus = dw_minus * importance_factor
-                self.weights = self.weights + dw_minus
+                # Simplified importance factor
+                importance_factor = 1.0 / (1.0 + self.importance_weights * 0.5)  # Reduced impact
+                dw_minus = -self.current_a_minus * self.post_trace * input_spikes * self.homeostatic_scale * importance_factor
+                weight_delta += dw_minus
 
             # LTP: Potentiation when output spikes AFTER input spike
             if output_spike:
-                dw_plus = self.current_a_plus * self.trace * self.homeostatic_scale
-                # Apply weight consolidation
-                importance_factor = 1.0 / (1.0 + self.importance_weights)
-                dw_plus = dw_plus * importance_factor
-                self.weights = self.weights + dw_plus
-                
-                # Update importance weights (weights that fire are more important)
-                self.importance_weights = self.importance_weights + 0.01 * self.trace
+                importance_factor = 1.0 / (1.0 + self.importance_weights * 0.5)
+                dw_plus = self.current_a_plus * self.trace * self.homeostatic_scale * importance_factor
+                weight_delta += dw_plus
 
-            # Weight decay regularization (L2 regularization to prevent overfitting)
-            self.weights = self.weights * (1.0 - self.weight_decay)
+                # Update importance weights (simplified)
+                self.importance_weights += 0.005 * self.trace  # Reduced from 0.01
 
-            # Clip weights to valid range (GPU operation)
+            # Apply weight decay and update in one operation
+            self.weights = (self.weights + weight_delta) * (1.0 - self.weight_decay)
+
+            # Clip weights
             self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
             
-            # Update consolidated weights (exponential moving average for stability)
-            # This helps retain knowledge over time
-            if self.consolidated_weights is not None:
-                # Ensure consolidated_weights is on correct device
-                if self.consolidated_weights.device != self.device:
-                    self.consolidated_weights = self.consolidated_weights.to(self.device)
-                consolidation_rate = 0.0001  # Slow consolidation
+            # Update consolidated weights less frequently (every 100 steps)
+            if self.update_count % 100 == 0 and self.consolidated_weights is not None:
+                consolidation_rate = 0.001  # Faster consolidation
                 self.consolidated_weights = (1.0 - consolidation_rate) * self.consolidated_weights + consolidation_rate * self.weights
-            else:
-                # Initialize consolidated_weights if it doesn't exist
-                self.consolidated_weights = self.weights.clone()
 
     def reset(self) -> None:
         """

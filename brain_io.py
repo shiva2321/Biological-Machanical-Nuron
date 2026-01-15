@@ -156,50 +156,80 @@ def load_brain(filename: str = 'my_brain.pkl', device: str = None) -> NeuralCirc
             device = 'cpu'
     
     if os.path.exists(filename):
-        # Load existing brain
-        with open(filename, 'rb') as f:
-            circuit = pickle.load(f)
-
-        # Move to specified device
+        # Try to load existing brain
         try:
-            import torch
-            target_device = torch.device(device)
-            for neuron in circuit.neurons:
-                if hasattr(neuron, 'to'):
-                    neuron.to(device)
-                elif hasattr(neuron, 'device'):
-                    # Move all tensors manually
-                    if hasattr(neuron, 'v') and isinstance(neuron.v, torch.Tensor):
-                        neuron.v = neuron.v.to(target_device)
-                    if hasattr(neuron, 'weights') and isinstance(neuron.weights, torch.Tensor):
-                        neuron.weights = neuron.weights.to(target_device)
-                    if hasattr(neuron, 'trace') and isinstance(neuron.trace, torch.Tensor):
-                        neuron.trace = neuron.trace.to(target_device)
-                    if hasattr(neuron, 'u') and isinstance(neuron.u, torch.Tensor):
-                        neuron.u = neuron.u.to(target_device)
-                    if hasattr(neuron, 'theta') and isinstance(neuron.theta, torch.Tensor):
-                        neuron.theta = neuron.theta.to(target_device)
+            with open(filename, 'rb') as f:
+                circuit = pickle.load(f)
+
+            # Move to specified device
+            try:
+                import torch
+                target_device = torch.device(device)
+                for neuron in circuit.neurons:
+                    if hasattr(neuron, 'to'):
+                        neuron.to(device)
+                    elif hasattr(neuron, 'device'):
+                        # Move all tensors manually
+                        if hasattr(neuron, 'v') and isinstance(neuron.v, torch.Tensor):
+                            neuron.v = neuron.v.to(target_device)
+                        if hasattr(neuron, 'weights') and isinstance(neuron.weights, torch.Tensor):
+                            neuron.weights = neuron.weights.to(target_device)
+                        if hasattr(neuron, 'trace') and isinstance(neuron.trace, torch.Tensor):
+                            neuron.trace = neuron.trace.to(target_device)
+                        if hasattr(neuron, 'u') and isinstance(neuron.u, torch.Tensor):
+                            neuron.u = neuron.u.to(target_device)
+                        if hasattr(neuron, 'theta') and isinstance(neuron.theta, torch.Tensor):
+                            neuron.theta = neuron.theta.to(target_device)
                     if hasattr(neuron, 'post_trace') and isinstance(neuron.post_trace, torch.Tensor):
                         neuron.post_trace = neuron.post_trace.to(target_device)
                     neuron.device = target_device
-        except Exception as e:
-            print(f"Warning: Could not move brain to {device}: {e}")
+            except Exception as e:
+                print(f"Warning: Could not move brain to {device}: {e}")
 
-        print("="*70)
-        print("BRAIN LOADED")
-        print("="*70)
-        print(f"File: {filename}")
-        print(f"Size: {os.path.getsize(filename) / 1024:.2f} KB")
-        print(f"Device: {device}")
-        print(f"\nArchitecture:")
-        print(f"  Neurons: {circuit.num_neurons}")
-        print(f"  Input Channels: {circuit.input_channels}")
-        print(f"  Connections: {circuit.get_num_connections()}")
-        print("="*70)
+            print("="*70)
+            print("BRAIN LOADED")
+            print("="*70)
+            print(f"File: {filename}")
+            print(f"Size: {os.path.getsize(filename) / 1024:.2f} KB")
+            print(f"Device: {device}")
+            print(f"\nArchitecture:")
+            print(f"  Neurons: {circuit.num_neurons}")
+            print(f"  Input Channels: {circuit.input_channels}")
+            print(f"  Connections: {circuit.get_num_connections()}")
+            print("="*70)
 
-        return circuit
+            return circuit
 
-    else:
+        except (EOFError, pickle.UnpicklingError, Exception) as e:
+            # Brain file is corrupted, back it up and create new one
+            print("="*70)
+            print("WARNING: CORRUPTED BRAIN DETECTED")
+            print("="*70)
+            print(f"Error: {e}")
+            print(f"The brain file '{filename}' appears to be corrupted.")
+
+            # Create backup
+            backup_filename = filename + '.corrupted.bak'
+            try:
+                import shutil
+                shutil.copy2(filename, backup_filename)
+                print(f"[OK] Backed up to: {backup_filename}")
+            except Exception as backup_error:
+                print(f"Could not create backup: {backup_error}")
+
+            # Remove corrupted file
+            try:
+                os.remove(filename)
+                print(f"[OK] Removed corrupted file")
+            except Exception as remove_error:
+                print(f"Could not remove corrupted file: {remove_error}")
+
+            print("\nCreating fresh brain...")
+            print("="*70)
+            # Fall through to create new brain below
+
+    # Create new default brain (if file doesn't exist or was corrupted)
+    if not os.path.exists(filename):
         # Create new default brain
         print("="*70)
         print("CREATING NEW BRAIN")

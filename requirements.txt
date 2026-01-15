@@ -3,5 +3,10 @@ matplotlib>=3.3.0
 streamlit>=1.28.0
 plotly>=5.14.0
 # PyTorch: CPU version (for GPU support, see GPU_SETUP.md)
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
-
+# HuggingFace datasets for real handwritten character data
+datasets>=2.0.0
+huggingface_hub>=0.16.0
+pillow>=9.0.0
+scikit-learn>=1.0.0

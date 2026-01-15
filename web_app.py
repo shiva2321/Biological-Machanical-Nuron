@@ -24,7 +24,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from brain_io import load_brain, save_brain, get_brain_info
-from lessons import train_reader, train_hunter, train_alphabet, train_digits, train_character_recognition
+from lessons import train_reader, train_hunter, train_alphabet, train_digits, train_character_recognition, train_with_real_emnist
 from data_factory import get_character_bitmap, visualize_character
 from circuit import NeuralCircuit
 from data_factory import generate_dataset
@@ -43,7 +43,7 @@ except ImportError:
 
 st.set_page_config(
     page_title="Nuron Mission Control",
-    page_icon="🧠",
+    page_icon="??",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -197,7 +197,7 @@ def main():
     """Main Streamlit application."""
 
     # Title
-    st.title("🧠 Nuron Mission Control")
+    st.title("?? Nuron Mission Control")
     st.markdown("*Real-time neural network training and testing dashboard*")
     st.markdown("---")
 
@@ -306,7 +306,7 @@ def main():
     brain = st.session_state.brain
 
     # ========== Main Content: Tabs ==========
-    tab1, tab2 = st.tabs(["🎓 Training", "🧪 Testing"])
+    tab1, tab2, tab3 = st.tabs(["🎓 Training", "🧪 Testing", "🧠 Brain Visualization"])
 
     # ========== Tab 1: Training ==========
     with tab1:
@@ -319,15 +319,45 @@ def main():
         with col1:
             st.subheader("Training Configuration")
 
-            # Task selection
-            task_type = st.selectbox(
-                "Select Task",
-                ["Alphabet (A-Z)", "Digits (0-9)", "Custom (A,B,C)"]
+            # Dataset source selection
+            dataset_source = st.radio(
+                "Dataset Source",
+                ["Synthetic (Fast)", "Real EMNIST (Authentic Handwriting)"],
+                index=0,  # Default to Synthetic
+                help="Synthetic uses procedurally generated patterns. EMNIST uses real handwritten data from HuggingFace."
             )
 
+            # Task selection
+            if dataset_source == "Synthetic (Fast)":
+                task_type = st.selectbox(
+                    "Select Task",
+                    ["Alphabet (A-Z)", "Digits (0-9)", "Custom (A,B,C)"]
+                )
+                custom_chars_list = None  # Not used for synthetic
+            else:
+                task_type = st.selectbox(
+                    "Select Task",
+                    ["Uppercase Letters (A-Z)", "Digits (0-9)", "First 10 Letters (A-J)", "Custom Selection"]
+                )
+
+                # Custom character selection for EMNIST
+                if task_type == "Custom Selection":
+                    custom_chars = st.text_input(
+                        "Enter characters (e.g., ABC123XYZ)",
+                        value="ABCDEF",
+                        max_chars=36
+                    ).upper()
+                    custom_chars_list = list(set(custom_chars))  # Remove duplicates
+                else:
+                    custom_chars_list = None  # Will be set based on task_type
+
             # Parameters
-            target_acc = st.slider("Target Accuracy", 0.5, 0.95, 0.75, 0.05)
-            dataset_size = st.number_input("Dataset Size", 500, 5000, 1000, 100)
+            target_acc = st.slider("Target Accuracy", 0.5, 0.95, 0.80, 0.05)
+
+            if dataset_source == "Synthetic (Fast)":
+                dataset_size = st.number_input("Dataset Size", 500, 5000, 1000, 100)
+            else:
+                samples_per_char = st.number_input("Samples per Character", 100, 1000, 500, 50)
 
         with col2:
             st.subheader("Status")
@@ -335,6 +365,12 @@ def main():
                 st.info("🟢 Training in progress...")
             else:
                 st.success("🟡 Ready to train")
+
+            # Dataset info
+            if dataset_source == "Real EMNIST (Authentic Handwriting)":
+                st.info("📦 Using real handwritten data from EMNIST dataset (HuggingFace)")
+            else:
+                st.info("🎨 Using synthetic procedural patterns")
 
         # Start training button
         if st.button("🚀 Start Relentless Training", type="primary", use_container_width=True):
@@ -374,13 +410,31 @@ def main():
             weight_heatmap_container = st.empty()
 
             # Select training function
-            if task_type == "Alphabet (A-Z)":
-                trainer = train_alphabet(brain, target_acc=target_acc, dataset_size=dataset_size)
-            elif task_type == "Digits (0-9)":
-                trainer = train_digits(brain, target_acc=target_acc, dataset_size=dataset_size)
-            else:  # Custom
-                trainer = train_character_recognition(brain, chars=['A', 'B', 'C'],
-                                                      target_acc=target_acc, dataset_size=dataset_size)
+            if dataset_source == "Synthetic (Fast)":
+                if task_type == "Alphabet (A-Z)":
+                    trainer = train_alphabet(brain, target_acc=target_acc, dataset_size=dataset_size)
+                elif task_type == "Digits (0-9)":
+                    trainer = train_digits(brain, target_acc=target_acc, dataset_size=dataset_size)
+                else:  # Custom
+                    trainer = train_character_recognition(brain, chars=['A', 'B', 'C'],
+                                                          target_acc=target_acc, dataset_size=dataset_size)
+            else:  # Real EMNIST
+                if task_type == "Uppercase Letters (A-Z)":
+                    chars_to_train = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+                elif task_type == "Digits (0-9)":
+                    chars_to_train = list('0123456789')
+                elif task_type == "First 10 Letters (A-J)":
+                    chars_to_train = list('ABCDEFGHIJ')
+                else:  # Custom Selection
+                    chars_to_train = custom_chars_list
+
+                trainer = train_with_real_emnist(
+                    brain,
+                    characters=chars_to_train,
+                    target_acc=target_acc,
+                    max_samples_per_class=samples_per_char,
+                    use_augmentation=True
+                )
 
             # Run training
             try:
@@ -431,7 +485,7 @@ def main():
                                         xaxis_title="Epoch",
                                         yaxis_title="Accuracy (%)",
                                         height=300)
-                    acc_chart_container.plotly_chart(fig_acc, use_container_width=True)
+                    acc_chart_container.plotly_chart(fig_acc, width='stretch')
 
                     # Update loss chart
                     loss_df = pd.DataFrame({
@@ -447,7 +501,7 @@ def main():
                                          xaxis_title="Epoch",
                                          yaxis_title="Loss",
                                          height=300)
-                    loss_chart_container.plotly_chart(fig_loss, use_container_width=True)
+                    loss_chart_container.plotly_chart(fig_loss, width='stretch')
 
                     # Update weight heatmap every 5 epochs
                     if status['epoch'] % 5 == 0 or status['progress'] >= 1.0:
@@ -465,7 +519,7 @@ def main():
                             title=f"Weight Matrix at Epoch {status['epoch']}"
                         )
                         fig_weights.update_layout(height=400)
-                        weight_heatmap_container.plotly_chart(fig_weights, use_container_width=True)
+                        weight_heatmap_container.plotly_chart(fig_weights, width='stretch')
 
                     # Small delay for visualization
                     time.sleep(0.05)
@@ -615,7 +669,7 @@ def main():
                     yaxis_title="Voltage (mV)",
                     height=300
                 )
-                st.plotly_chart(fig_voltages, use_container_width=True)
+                st.plotly_chart(fig_voltages, width='stretch')
 
         # Quick load templates
         st.markdown("---")
@@ -640,6 +694,290 @@ def main():
                         except Exception as e:
                             st.error(f"Error loading {char}: {e}")
 
+    # ========== Tab 3: Brain Visualization ==========
+    with tab3:
+        st.header("🧠 Live Brain Visualization")
+        st.markdown("Explore the neural network structure and activity in real-time!")
+
+        # Refresh button
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("🔄 Refresh Brain State", use_container_width=True):
+                st.rerun()
+        with col2:
+            auto_refresh = st.checkbox("Auto-refresh", value=False)
+
+        if auto_refresh:
+            st.info("🔄 Auto-refreshing every 2 seconds...")
+            time.sleep(2)
+            st.rerun()
+
+        st.markdown("---")
+
+        # Brain statistics
+        st.subheader("📊 Brain Statistics")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        info = get_brain_info(brain)
+
+        with col1:
+            st.metric("Total Neurons", info['num_neurons'])
+        with col2:
+            st.metric("Input Channels", info['input_channels'])
+        with col3:
+            st.metric("Total Weights", info['total_weights'])
+        with col4:
+            avg_weights = info['total_weights'] / max(info['num_neurons'], 1)
+            st.metric("Avg Weights/Neuron", f"{avg_weights:.0f}")
+
+        st.markdown("---")
+
+        # Neuron state visualization
+        st.subheader("⚡ Neuron States")
+
+        # Get current neuron states
+        voltages = []
+        thresholds = []
+
+        for i in range(brain.num_neurons):
+            neuron = brain.neurons[i]
+
+            # Get voltage
+            v = neuron.v
+            if TORCH_AVAILABLE and isinstance(v, torch.Tensor):
+                v = v.cpu().item()
+            else:
+                v = float(v)
+            voltages.append(v)
+
+            # Get threshold
+            if hasattr(neuron, 'theta_base'):
+                thresh = neuron.theta_base
+            else:
+                thresh = -50.0
+            thresholds.append(thresh)
+
+        # Create voltage bar chart
+        neuron_df = pd.DataFrame({
+            'Neuron': [f"N{i}" for i in range(len(voltages))],
+            'Voltage (mV)': voltages,
+            'Threshold': thresholds
+        })
+
+        fig_neuron_states = go.Figure()
+
+        # Add voltage bars
+        fig_neuron_states.add_trace(go.Bar(
+            name='Voltage',
+            x=neuron_df['Neuron'],
+            y=neuron_df['Voltage (mV)'],
+            marker_color='lightblue'
+        ))
+
+        # Add threshold line
+        fig_neuron_states.add_trace(go.Scatter(
+            name='Threshold',
+            x=neuron_df['Neuron'],
+            y=neuron_df['Threshold'],
+            mode='lines',
+            line=dict(color='red', width=2, dash='dash')
+        ))
+
+        fig_neuron_states.update_layout(
+            title="Current Neuron Voltage Levels",
+            xaxis_title="Neuron",
+            yaxis_title="Membrane Potential (mV)",
+            height=400,
+            showlegend=True
+        )
+
+        st.plotly_chart(fig_neuron_states, width='stretch')
+
+        st.markdown("---")
+
+        # Weight matrix visualization
+        st.subheader("🔗 Synaptic Weight Matrix")
+
+        # Build weight matrix
+        weight_matrix = build_weight_matrix(brain)
+
+        # Display options
+        col1, col2 = st.columns([1, 3])
+
+        with col1:
+            display_neurons = st.slider(
+                "Neurons to display",
+                1,
+                min(brain.num_neurons, 50),
+                min(brain.num_neurons, 20)
+            )
+
+            display_inputs = st.slider(
+                "Input channels to display",
+                8,
+                min(brain.input_channels, 128),
+                min(brain.input_channels, 64)
+            )
+
+            colorscale = st.selectbox(
+                "Color scheme",
+                ["Viridis", "RdBu", "Plasma", "Inferno", "Cividis", "Turbo"]
+            )
+
+        with col2:
+            # Limit display for performance
+            display_matrix = weight_matrix[:display_neurons, :display_inputs]
+
+            fig_weights = px.imshow(
+                display_matrix,
+                labels=dict(x="Input Channel", y="Neuron", color="Weight"),
+                x=[f"In{i}" for i in range(display_inputs)],
+                y=[f"N{i}" for i in range(display_neurons)],
+                color_continuous_scale=colorscale,
+                title=f"Weight Matrix ({display_neurons} neurons × {display_inputs} inputs)",
+                aspect='auto'
+            )
+            fig_weights.update_layout(height=500)
+
+            st.plotly_chart(fig_weights, width='stretch')
+
+        st.markdown("---")
+
+        # Weight statistics by neuron
+        st.subheader("📈 Weight Statistics by Neuron")
+
+        # Calculate stats per neuron
+        neuron_stats = []
+        for i in range(min(brain.num_neurons, 50)):  # Limit for performance
+            weights = brain.get_weights(i)
+            if len(weights) > 0:
+                neuron_stats.append({
+                    'Neuron': f"N{i}",
+                    'Mean': np.mean(weights),
+                    'Std': np.std(weights),
+                    'Min': np.min(weights),
+                    'Max': np.max(weights),
+                    'Count': len(weights)
+                })
+
+        if neuron_stats:
+            stats_df = pd.DataFrame(neuron_stats)
+
+            # Create subplot for mean and std
+            fig_stats = go.Figure()
+
+            fig_stats.add_trace(go.Scatter(
+                x=stats_df['Neuron'],
+                y=stats_df['Mean'],
+                mode='markers+lines',
+                name='Mean Weight',
+                marker=dict(size=8),
+                line=dict(width=2)
+            ))
+
+            fig_stats.add_trace(go.Scatter(
+                x=stats_df['Neuron'],
+                y=stats_df['Std'],
+                mode='markers+lines',
+                name='Std Dev',
+                marker=dict(size=8, symbol='diamond'),
+                line=dict(width=2, dash='dash'),
+                yaxis='y2'
+            ))
+
+            fig_stats.update_layout(
+                title="Weight Statistics by Neuron",
+                xaxis_title="Neuron",
+                yaxis_title="Mean Weight",
+                yaxis2=dict(
+                    title="Standard Deviation",
+                    overlaying='y',
+                    side='right'
+                ),
+                height=400,
+                showlegend=True
+            )
+
+            st.plotly_chart(fig_stats, width='stretch')
+
+            # Show data table
+            with st.expander("?? View Detailed Statistics Table"):
+                st.dataframe(stats_df, use_container_width=True)
+
+        st.markdown("---")
+
+        # Network connectivity visualization
+        st.subheader("🕸️ Network Connectivity")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Weight distribution histogram
+            all_weights = []
+            for i in range(brain.num_neurons):
+                weights = brain.get_weights(i)
+                if len(weights) > 0:
+                    all_weights.extend(weights)
+
+            if all_weights:
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(
+                    x=all_weights,
+                    nbinsx=50,
+                    name='Weight Distribution',
+                    marker_color='lightgreen'
+                ))
+
+                fig_hist.update_layout(
+                    title="Weight Value Distribution",
+                    xaxis_title="Weight Value",
+                    yaxis_title="Count",
+                    height=300,
+                    showlegend=False
+                )
+
+                st.plotly_chart(fig_hist, width='stretch')
+
+        with col2:
+            # Connection density
+            total_possible = brain.num_neurons * brain.input_channels
+            total_actual = info['total_weights']
+            density = (total_actual / total_possible * 100) if total_possible > 0 else 0
+
+            st.metric("Connection Density", f"{density:.2f}%")
+            st.metric("Total Connections", f"{total_actual:,}")
+            st.metric("Possible Connections", f"{total_possible:,}")
+
+            # Show connectivity gauge
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=density,
+                title={'text': "Network Density (%)"},
+                gauge={
+                    'axis': {'range': [None, 100]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [0, 33], 'color': "lightgray"},
+                        {'range': [33, 66], 'color': "gray"},
+                        {'range': [66, 100], 'color': "darkgray"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 90
+                    }
+                }
+            ))
+
+            fig_gauge.update_layout(height=250)
+            st.plotly_chart(fig_gauge, width='stretch')
+
+        st.markdown("---")
+
+        st.info("💡 **Tip**: Click 'Auto-refresh' to see live updates during training!")
+        st.markdown("Use this tab to monitor neural activity, synaptic weights, and network connectivity in real-time.")
+
     # Footer
     st.markdown("---")
     st.caption("🧠 Nuron Framework - Mission Control Dashboard | Built with Streamlit")
@@ -651,3 +989,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

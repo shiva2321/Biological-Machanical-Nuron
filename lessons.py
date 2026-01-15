@@ -727,3 +727,100 @@ def train_character_recognition(
         task_name=f"Custom_{''.join(chars)}",
         **kwargs
     )
+
+
+def train_with_real_emnist(
+    circuit: NeuralCircuit,
+    characters: list = None,
+    target_acc: float = 0.85,
+    max_samples_per_class: int = 500,
+    use_augmentation: bool = True,
+    **kwargs
+):
+    """
+    Train the circuit with REAL handwritten characters from EMNIST dataset.
+
+    This fetches authentic handwritten character data from HuggingFace,
+    providing much better real-world recognition capability.
+
+    Args:
+        circuit: NeuralCircuit to train
+        characters: List of characters to train on (default: A-Z)
+                   Examples: ['A','B','C'] or ['0','1','2','3','4','5','6','7','8','9']
+        target_acc: Target accuracy (default: 0.85)
+        max_samples_per_class: Samples per character (default: 500)
+        use_augmentation: Add noise augmentation (default: True)
+        **kwargs: Additional arguments for train_until_mastery
+
+    Yields:
+        Training status updates
+
+    Example:
+        >>> # Train on uppercase letters A-Z
+        >>> for status in train_with_real_emnist(brain, characters=list('ABCDEFGHIJKLMNOPQRSTUVWXYZ')):
+        ...     print(f"Epoch {status['epoch']}: {status['accuracy']:.2%}")
+
+        >>> # Train on digits 0-9
+        >>> for status in train_with_real_emnist(brain, characters=list('0123456789')):
+        ...     print(f"Epoch {status['epoch']}: {status['accuracy']:.2%}")
+    """
+    from smart_trainer import train_until_mastery
+    from dataset_loader import load_emnist_dataset, augment_dataset
+
+    # Default to uppercase alphabet if not specified
+    if characters is None:
+        characters = list('ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+
+    # Load real EMNIST dataset
+    print(f"\n{'='*70}")
+    print("TRAINING WITH REAL EMNIST HANDWRITTEN DATA")
+    print(f"{'='*70}")
+    print(f"Characters: {characters}")
+    print(f"Samples per character: {max_samples_per_class}")
+    print(f"Target accuracy: {target_acc:.1%}")
+    print()
+
+    dataset = load_emnist_dataset(
+        split='train',
+        characters=characters,
+        max_samples_per_class=max_samples_per_class
+    )
+
+    inputs = dataset['inputs']
+    labels = dataset['labels']
+    char_map = dataset['char_map']
+    label_map = dataset['label_map']
+
+    # Apply augmentation if requested
+    if use_augmentation:
+        print("[*] Applying data augmentation (noise injection)...")
+        inputs, labels = augment_dataset(inputs, labels, noise_level=0.08)
+
+    # Shuffle data
+    indices = np.random.permutation(len(inputs))
+    inputs = inputs[indices]
+    labels = labels[indices]
+
+    # Prepare task data
+    task_data = {
+        'inputs': inputs,
+        'labels': labels,
+        'char_map': char_map,
+        'label_map': label_map
+    }
+
+    task_name = f"EMNIST_{''.join(characters[:3])}{'...' if len(characters) > 3 else ''}"
+
+    print(f"\n[*] Starting training with {len(inputs)} real handwritten samples!")
+    print(f"[*] Task: {task_name}\n")
+
+    # Train relentlessly with the smart trainer
+    yield from train_until_mastery(
+        circuit=circuit,
+        task_data=task_data,
+        target_acc=target_acc,
+        task_name=task_name,
+        **kwargs
+    )
+
+
