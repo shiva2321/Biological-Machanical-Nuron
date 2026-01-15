@@ -167,43 +167,87 @@ class BiologicalNeuron:
         Returns:
             bool: True if neuron spiked, False otherwise
         """
-        # Compute synaptic input (I_syn = weights · trace)
-        I_syn = torch.matmul(self.weights, self.trace)
+        # Use no_grad context to reduce overhead (we're not backpropagating)
+        with torch.no_grad():
+            # Convert I_ext to scalar float efficiently
+            # Avoid creating tensors - use scalar directly
+            if isinstance(I_ext, torch.Tensor):
+                I_ext_scalar = float(I_ext.item() if I_ext.numel() == 1 else I_ext[0].item())
+            elif isinstance(I_ext, np.ndarray):
+                I_ext_scalar = float(I_ext.item() if I_ext.size == 1 else I_ext[0])
+            else:
+                I_ext_scalar = float(I_ext)
 
-        # Update membrane potential (Euler integration)
-        # dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
-        dv = ((-self.v + self.v_rest + I_syn + I_ext - self.u) / self.tau_m) * self.dt
-        self.v = self.v + dv
+            # Compute synaptic input (I_syn = weights · trace)
+            I_syn = torch.matmul(self.weights, self.trace)
 
-        # Update adaptation current (exponential decay)
-        # du/dt = -u / tau_u
-        self.u = self.u * self.decay_u
+            # Update membrane potential (Euler integration)
+            # dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
+            # Use scalar I_ext directly (PyTorch broadcasts)
+            dv = ((-self.v + self.v_rest + I_syn + I_ext_scalar - self.u) / self.tau_m) * self.dt
+            self.v = self.v + dv
 
-        # Update dynamic threshold (exponential decay)
-        # dθ/dt = -θ / tau_theta
-        self.theta = self.theta * self.decay_theta
+            # Update adaptation current (exponential decay)
+            # du/dt = -u / tau_u
+            self.u = self.u * self.decay_u
 
-        # Check spike condition
-        spike_threshold = self.theta_base + self.u + self.theta
-        spike = self.v > spike_threshold
+            # Update dynamic threshold (exponential decay)
+            # dθ/dt = -θ / tau_theta
+            self.theta = self.theta * self.decay_theta
 
-        # If spike occurred
-        if spike:
-            # Reset membrane potential
-            self.v = torch.tensor(self.v_reset, dtype=torch.float32, device=self.device)
+            # Check spike condition
+            # Note: .item() forces sync, but it's necessary for Python bool
+            # For small networks, this overhead is acceptable
+            spike_threshold = self.theta_base + self.u + self.theta
+            spike_occurred = (self.v > spike_threshold).item()
+            
+            if spike_occurred:
+                # Reset membrane potential (use in-place operation to avoid new tensor)
+                self.v.fill_(self.v_reset)
 
-            # Increase adaptation (spike-frequency adaptation)
-            self.u = self.u + self.u_increment
+                # Increase adaptation (spike-frequency adaptation)
+                self.u = self.u + self.u_increment
 
-            # Increase dynamic threshold (homeostatic regulation)
-            self.theta = self.theta + self.theta_increment
+                # Increase dynamic threshold (homeostatic regulation)
+                self.theta = self.theta + self.theta_increment
 
-            # Update post-synaptic trace
-            self.post_trace = self.post_trace + 1.0
+                # Update post-synaptic trace
+                self.post_trace = self.post_trace + 1.0
 
-            return True
+                return True
 
-        return False
+            return False
+
+    def step(
+        self,
+        input_spikes,
+        I_ext: float = 0.0,
+        learning: bool = True
+    ) -> bool:
+        """
+        Complete neuron update step with input processing and STDP learning.
+
+        This is the main interface method that handles:
+        1. Converting input_spikes to torch tensor
+        2. Updating neuron state
+        3. Applying STDP learning if enabled
+
+        Args:
+            input_spikes: Input spike vector (numpy array or torch tensor)
+            I_ext: External current (float, numpy, or torch tensor)
+            learning: Whether to apply STDP learning
+
+        Returns:
+            bool: True if neuron spiked, False otherwise
+        """
+        # Update neuron state (this computes I_syn from trace)
+        spike = self.update(I_ext=I_ext)
+
+        # Apply STDP learning if enabled
+        if learning:
+            self.stdp(input_spikes, spike)
+
+        return spike
 
     def stdp(self, input_spikes: torch.Tensor, output_spike: bool) -> None:
         """
@@ -217,40 +261,42 @@ class BiologicalNeuron:
             input_spikes: Binary spike vector (0 or 1) for each input
                          Automatically converted to GPU tensor if needed
         """
-        # Ensure input_spikes is a GPU tensor
-        if not isinstance(input_spikes, torch.Tensor):
-            input_spikes = torch.tensor(
-                input_spikes,
-                dtype=torch.float32,
-                device=self.device
-            )
-        elif input_spikes.device != self.device:
-            input_spikes = input_spikes.to(self.device)
+        # Use no_grad context for weight updates (STDP doesn't need gradients)
+        with torch.no_grad():
+            # Ensure input_spikes is a GPU tensor
+            if not isinstance(input_spikes, torch.Tensor):
+                input_spikes = torch.tensor(
+                    input_spikes,
+                    dtype=torch.float32,
+                    device=self.device
+                )
+            elif input_spikes.device != self.device:
+                input_spikes = input_spikes.to(self.device)
 
-        # Update pre-synaptic traces (exponential decay + spike)
-        self.trace = self.trace * self.decay_trace + input_spikes
+            # Update pre-synaptic traces (exponential decay + spike)
+            self.trace = self.trace * self.decay_trace + input_spikes
 
-        # Update post-synaptic trace (exponential decay)
-        self.post_trace = self.post_trace * self.decay_trace
+            # Update post-synaptic trace (exponential decay)
+            self.post_trace = self.post_trace * self.decay_trace
 
-        # === STDP Weight Updates ===
+            # === STDP Weight Updates ===
 
-        # LTD: Depression when input spikes AFTER output spike
-        # (Post-synaptic trace is high, indicating recent post-spike)
-        if torch.any(input_spikes > 0):
-            # Use torch.where for efficient GPU masking
-            dw_minus = -self.a_minus * self.post_trace * input_spikes
-            self.weights = self.weights + dw_minus
+            # LTD: Depression when input spikes AFTER output spike
+            # (Post-synaptic trace is high, indicating recent post-spike)
+            if torch.any(input_spikes > 0):
+                # Use torch.where for efficient GPU masking
+                dw_minus = -self.a_minus * self.post_trace * input_spikes
+                self.weights = self.weights + dw_minus
 
-        # LTP: Potentiation when output spikes AFTER input spike
-        # (Pre-synaptic trace is high, indicating recent pre-spike)
-        if output_spike:
-            # Strengthen weights proportional to pre-synaptic trace
-            dw_plus = self.a_plus * self.trace
-            self.weights = self.weights + dw_plus
+            # LTP: Potentiation when output spikes AFTER input spike
+            # (Pre-synaptic trace is high, indicating recent pre-spike)
+            if output_spike:
+                # Strengthen weights proportional to pre-synaptic trace
+                dw_plus = self.a_plus * self.trace
+                self.weights = self.weights + dw_plus
 
-        # Clip weights to valid range (GPU operation)
-        self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
+            # Clip weights to valid range (GPU operation)
+            self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
 
     def reset(self) -> None:
         """
@@ -258,11 +304,18 @@ class BiologicalNeuron:
 
         Useful for starting new trials or episodes.
         """
-        self.v = torch.tensor(self.v_rest, dtype=torch.float32, device=self.device)
-        self.u = torch.tensor(0.0, dtype=torch.float32, device=self.device)
-        self.theta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
-        self.trace = torch.zeros(self.n_inputs, dtype=torch.float32, device=self.device)
-        self.post_trace = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        # Use in-place operations to avoid creating new tensors
+        self.v.fill_(self.v_rest)
+        self.u.fill_(0.0)
+        self.theta.fill_(0.0)
+        self.trace.fill_(0.0)
+        self.post_trace.fill_(0.0)
+    
+    def reset_state(self) -> None:
+        """
+        Alias for reset() for compatibility with circuit interface.
+        """
+        self.reset()
 
     def get_state(self) -> dict:
         """

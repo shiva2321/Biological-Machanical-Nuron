@@ -150,11 +150,10 @@ class NeuralCircuit:
             'dt': dt,
             'tau_m': 20.0,
             'tau_trace': 20.0,
-            'a_plus': 0.01,
-            'a_minus': 0.01,
+            'a_plus': 0.1,  # Increased from 0.01 for better learning
+            'a_minus': 0.1,  # Increased from 0.01 for better learning
             'weight_min': 0.0,
-            'weight_max': 1.0,
-            'use_gpu': True  # Enable GPU by default if available
+            'weight_max': 10.0,  # Increased from 1.0 for more capacity
         }
 
         # Override with user-provided parameters
@@ -328,10 +327,29 @@ class NeuralCircuit:
                         for j, other_neuron in enumerate(self.neurons):
                             if i != j:
                                 # Decrease membrane potential (inhibition)
-                                other_neuron.v -= self.inhibition_strength
+                                # Handle both GPU and CPU tensors
+                                if isinstance(other_neuron.v, torch.Tensor):
+                                    other_neuron.v = other_neuron.v - self.inhibition_strength
+                                else:
+                                    other_neuron.v -= self.inhibition_strength
 
         # 3. Update each neuron
         output_spikes = np.zeros(self.num_neurons, dtype=bool)
+
+        # Convert input_spikes to torch tensor once if any neuron uses GPU
+        # Check if we need GPU conversion
+        use_gpu = False
+        if len(self.neurons) > 0 and hasattr(self.neurons[0], 'device'):
+            use_gpu = self.neurons[0].device.type == 'cuda'
+
+        if use_gpu and not isinstance(input_spikes, torch.Tensor):
+            input_spikes_tensor = torch.tensor(
+                input_spikes,
+                dtype=torch.float32,
+                device=self.neurons[0].device
+            )
+        else:
+            input_spikes_tensor = input_spikes
 
         for i, neuron in enumerate(self.neurons):
             # Combine external inputs and internal (delayed) inputs
@@ -339,13 +357,15 @@ class NeuralCircuit:
             # Internal inputs are direct current injections (already weighted)
 
             # Update neuron with external input and internal current
+            # I_ext is already a scalar, so no conversion needed
             spike = neuron.step(
-                input_spikes=input_spikes,
-                I_ext=I_ext[i] + internal_spikes[i],
+                input_spikes=input_spikes_tensor,
+                I_ext=float(I_ext[i] + internal_spikes[i]),
                 learning=learning
             )
 
-            output_spikes[i] = spike
+            # Spike is already a bool from neuron.step()
+            output_spikes[i] = bool(spike)
 
         # 4. Route output spikes through connections (with delays)
         for i, spiked in enumerate(output_spikes):
@@ -441,7 +461,7 @@ class NeuralCircuit:
 
         # Handle GPU weights if necessary
         neuron = self.neurons[neuron_id]
-        if neuron.use_gpu:
+        if hasattr(neuron, 'device') and neuron.device.type == 'cuda':
             neuron.weights = torch.from_numpy(weights).float().to(neuron.device)
         else:
             neuron.weights = weights.copy()

@@ -135,8 +135,15 @@ def predict_from_grid(circuit, grid_8x8, char_map=None):
         learning=False
     )
 
-    # Get voltages
-    voltages = np.array([circuit.neurons[i].v for i in range(circuit.num_neurons)])
+    # Get voltages (handle both GPU and CPU)
+    voltages = []
+    for i in range(circuit.num_neurons):
+        v = circuit.neurons[i].v
+        if TORCH_AVAILABLE and isinstance(v, torch.Tensor):
+            voltages.append(v.cpu().item())
+        else:
+            voltages.append(float(v))
+    voltages = np.array(voltages)
 
     # Find highest voltage (most activated neuron)
     predicted_idx = np.argmax(voltages)
