@@ -12,6 +12,12 @@ import numpy as np
 from typing import List, Optional, Dict
 from neuron import BiologicalNeuron
 
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 
 class Connection:
     """
@@ -147,7 +153,8 @@ class NeuralCircuit:
             'a_plus': 0.01,
             'a_minus': 0.01,
             'weight_min': 0.0,
-            'weight_max': 1.0
+            'weight_max': 1.0,
+            'use_gpu': True  # Enable GPU by default if available
         }
 
         # Override with user-provided parameters
@@ -412,7 +419,11 @@ class NeuralCircuit:
         if neuron_id < 0 or neuron_id >= self.num_neurons:
             raise ValueError(f"Neuron {neuron_id} out of range [0, {self.num_neurons})")
 
-        return self.neurons[neuron_id].weights.copy()
+        # Handle GPU weights if necessary
+        weights = self.neurons[neuron_id].weights
+        if TORCH_AVAILABLE and isinstance(weights, torch.Tensor):
+            return weights.cpu().numpy()
+        return weights.copy()
 
     def set_weights(self, neuron_id: int, weights: np.ndarray) -> None:
         """
@@ -428,7 +439,12 @@ class NeuralCircuit:
         if weights.shape[0] != self.input_channels:
             raise ValueError(f"Expected {self.input_channels} weights, got {weights.shape[0]}")
 
-        self.neurons[neuron_id].weights = weights.copy()
+        # Handle GPU weights if necessary
+        neuron = self.neurons[neuron_id]
+        if neuron.use_gpu:
+            neuron.weights = torch.from_numpy(weights).float().to(neuron.device)
+        else:
+            neuron.weights = weights.copy()
 
     def get_connection_matrix(self) -> np.ndarray:
         """

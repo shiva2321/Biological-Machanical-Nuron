@@ -40,6 +40,12 @@ Thumbs.db
 # Outputs (optional - uncomment to ignore)
 # outputs/*.png
 
+# Brain persistence files8 (generated at runtime)
+my_brain.pkl
+my_brain_age.txt
+demo_*.pkl
+*_brain.pkl
+
 # Testing
 .pytest_cache/
 .coverage

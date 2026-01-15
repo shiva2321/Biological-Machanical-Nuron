@@ -1,5 +1,6 @@
 # Nuron: Biologically-Inspired Spiking Neural Network Framework
 
+
 A Python implementation of biologically plausible spiking neural networks featuring Leaky Integrate-and-Fire (LIF) neurons, Spike-Timing-Dependent Plasticity (STDP), and temporal sequence detection.
 
 ## 🧠 Overview

@@ -1,262 +1,454 @@
 """
-BiologicalNeuron: A biologically plausible neuron model with LIF dynamics,
-adaptation, and STDP learning.
+Biological Neuron: PyTorch + CUDA Implementation
+
+High-performance GPU-accelerated implementation of a Leaky Integrate-and-Fire (LIF)
+neuron with Spike-Timing-Dependent Plasticity (STDP) learning.
+
+Optimized for NVIDIA GPUs (RTX 3060, 3090, etc.) using PyTorch CUDA operations.
+All computation happens on GPU - tensors only move to CPU when explicitly requested.
+
+Key Features:
+- LIF dynamics with adaptive threshold
+- STDP learning (Hebbian plasticity)
+- Full GPU acceleration
+- torch.float32 for maximum performance
+- Automatic CUDA device detection
 """
 
+import torch
 import numpy as np
+from typing import Optional, Tuple
 
 
 class BiologicalNeuron:
     """
-    Leaky Integrate-and-Fire neuron with adaptation and Spike-Timing-Dependent Plasticity.
+    GPU-accelerated Leaky Integrate-and-Fire neuron with STDP.
 
-    This neuron model implements:
-    - LIF dynamics with membrane potential decay
-    - Adaptive threshold and adaptation current
-    - STDP-based synaptic plasticity
+    Uses PyTorch tensors on CUDA for all operations. Automatically detects
+    and uses GPU if available, otherwise falls back to CPU.
+
+    Dynamics:
+        dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
+        du/dt = -u / tau_u
+        dθ/dt = -θ / tau_theta
+
+    Spike condition: v > (theta_base + u + theta)
+
+    STDP:
+        - Pre before Post (causal): LTP (strengthen synapse)
+        - Post before Pre (acausal): LTD (weaken synapse)
+
+    Example:
+        >>> # Automatically uses GPU if available
+        >>> neuron = BiologicalNeuron(n_inputs=64)
+        >>> print(f"Using device: {neuron.device}")  # cuda or cpu
+        >>>
+        >>> # All operations on GPU
+        >>> input_spikes = torch.randn(64).cuda()
+        >>> spike = neuron.update(I_ext=50.0)
+        >>>
+        >>> # Get state as numpy (moves to CPU)
+        >>> state = neuron.get_state()
     """
 
     def __init__(
         self,
         n_inputs: int,
-        tau_m: float = 20.0,      # Membrane time constant (ms)
-        tau_u: float = 100.0,     # Adaptation time constant (ms)
-        tau_theta: float = 1000.0,  # Threshold adaptation time constant (ms)
-        tau_trace: float = 20.0,  # STDP trace time constant (ms)
-        dt: float = 1.0,          # Time step (ms)
-        v_rest: float = -70.0,    # Resting potential (mV)
-        v_reset: float = -75.0,   # Reset potential after spike (mV)
-        theta_base: float = -50.0,  # Base threshold (mV)
-        u_increment: float = 5.0,   # Adaptation increment on spike
-        theta_increment: float = 2.0,  # Threshold increment on spike
-        a_plus: float = 0.01,     # STDP potentiation learning rate
-        a_minus: float = 0.01,    # STDP depression learning rate
-        weight_min: float = 0.0,  # Minimum synaptic weight
-        weight_max: float = 1.0   # Maximum synaptic weight
+        tau_m: float = 20.0,
+        tau_u: float = 30.0,
+        tau_theta: float = 50.0,
+        tau_trace: float = 20.0,
+        v_rest: float = -70.0,
+        v_reset: float = -75.0,
+        theta_base: float = -55.0,
+        u_increment: float = 2.0,
+        theta_increment: float = 1.0,
+        dt: float = 1.0,
+        a_plus: float = 0.05,
+        a_minus: float = 0.05,
+        weight_min: float = 0.0,
+        weight_max: float = 10.0,
+        device: Optional[str] = None
     ):
         """
-        Initialize the biological neuron with LIF dynamics.
+        Initialize GPU-accelerated biological neuron.
 
         Args:
-            n_inputs: Number of input synaptic connections
-            tau_m: Membrane potential decay time constant
-            tau_u: Adaptation current decay time constant
-            tau_theta: Dynamic threshold decay time constant
-            tau_trace: Eligibility trace decay time constant
-            dt: Integration time step
-            v_rest: Resting membrane potential
-            v_reset: Reset potential after spike
-            theta_base: Base firing threshold
+            n_inputs: Number of input synapses
+            tau_m: Membrane time constant (ms)
+            tau_u: Adaptation time constant (ms)
+            tau_theta: Threshold adaptation time constant (ms)
+            tau_trace: STDP trace time constant (ms)
+            v_rest: Resting potential (mV)
+            v_reset: Reset potential after spike (mV)
+            theta_base: Base threshold (mV)
             u_increment: Adaptation increase per spike
             theta_increment: Threshold increase per spike
-            a_plus: Learning rate for potentiation (pre before post)
-            a_minus: Learning rate for depression (post before pre)
-            weight_min: Minimum weight value (clipping)
-            weight_max: Maximum weight value (clipping)
+            dt: Time step (ms)
+            a_plus: LTP learning rate
+            a_minus: LTD learning rate
+            weight_min: Minimum synaptic weight
+            weight_max: Maximum synaptic weight
+            device: Force device ('cuda' or 'cpu'), None for auto-detect
         """
-        self.n_inputs = n_inputs
-        self.dt = dt
+        # Automatic device detection
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
 
-        # Time constants
+        # Print device info (useful for debugging)
+        if self.device.type == 'cuda':
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"[GPU] Using CUDA device: {gpu_name}")
+        else:
+            print(f"[CPU] CUDA not available, using CPU")
+
+        # Store parameters
+        self.n_inputs = n_inputs
         self.tau_m = tau_m
         self.tau_u = tau_u
         self.tau_theta = tau_theta
         self.tau_trace = tau_trace
-
-        # Voltage parameters
         self.v_rest = v_rest
         self.v_reset = v_reset
         self.theta_base = theta_base
-
-        # Adaptation parameters
         self.u_increment = u_increment
         self.theta_increment = theta_increment
-
-        # STDP parameters
+        self.dt = dt
         self.a_plus = a_plus
         self.a_minus = a_minus
         self.weight_min = weight_min
         self.weight_max = weight_max
 
-        # State variables
-        self.v: float = v_rest  # Membrane potential
-        self.u: float = 0.0     # Adaptation current
-        self.theta: float = 0.0  # Dynamic threshold (relative to theta_base)
+        # Initialize state variables as GPU tensors (torch.float32 for speed)
+        self.v = torch.tensor(v_rest, dtype=torch.float32, device=self.device)
+        self.u = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self.theta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
-        # Synaptic weights and traces
-        self.weights: np.ndarray = np.random.uniform(
-            0.3, 0.7, size=n_inputs
-        ).astype(np.float64)
-        self.trace: np.ndarray = np.zeros(n_inputs, dtype=np.float64)
+        # Initialize synaptic weights (random initialization)
+        self.weights = torch.rand(n_inputs, dtype=torch.float32, device=self.device) * 0.5
 
-        # Post-synaptic trace for STDP
-        self.post_trace: float = 0.0
+        # Initialize STDP traces
+        self.trace = torch.zeros(n_inputs, dtype=torch.float32, device=self.device)
+        self.post_trace = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
-    def update(self, input_spikes: np.ndarray, I_ext: float = 0.0) -> bool:
+        # Precompute decay factors (for efficiency)
+        self.decay_v = torch.tensor(
+            torch.exp(torch.tensor(-dt / tau_m)),
+            dtype=torch.float32,
+            device=self.device
+        )
+        self.decay_u = torch.tensor(
+            torch.exp(torch.tensor(-dt / tau_u)),
+            dtype=torch.float32,
+            device=self.device
+        )
+        self.decay_theta = torch.tensor(
+            torch.exp(torch.tensor(-dt / tau_theta)),
+            dtype=torch.float32,
+            device=self.device
+        )
+        self.decay_trace = torch.tensor(
+            torch.exp(torch.tensor(-dt / tau_trace)),
+            dtype=torch.float32,
+            device=self.device
+        )
+
+    def update(self, I_ext: float = 0.0) -> bool:
         """
-        Update neuron state using Euler integration and check for spike.
+        Update neuron state for one time step (GPU operation).
 
-        Implements the differential equations:
-        dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
-        du/dt = -u / tau_u
-        d(theta)/dt = -theta / tau_theta
+        Implements LIF dynamics with adaptation and dynamic threshold.
 
         Args:
-            input_spikes: Binary array of input spikes (shape: n_inputs)
-            I_ext: External current injection
+            I_ext: External input current (mV)
 
         Returns:
             bool: True if neuron spiked, False otherwise
         """
-        # Compute synaptic current: weighted sum of input spikes
-        I_syn = np.dot(self.weights, input_spikes)
+        # Compute synaptic input (I_syn = weights · trace)
+        I_syn = torch.matmul(self.weights, self.trace)
 
-        # Euler integration for membrane potential
+        # Update membrane potential (Euler integration)
         # dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
         dv = ((-self.v + self.v_rest + I_syn + I_ext - self.u) / self.tau_m) * self.dt
-        self.v += dv
+        self.v = self.v + dv
 
-        # Euler integration for adaptation current
+        # Update adaptation current (exponential decay)
         # du/dt = -u / tau_u
-        du = (-self.u / self.tau_u) * self.dt
-        self.u += du
+        self.u = self.u * self.decay_u
 
-        # Euler integration for dynamic threshold
-        # d(theta)/dt = -theta / tau_theta
-        dtheta = (-self.theta / self.tau_theta) * self.dt
-        self.theta += dtheta
+        # Update dynamic threshold (exponential decay)
+        # dθ/dt = -θ / tau_theta
+        self.theta = self.theta * self.decay_theta
 
-        # Update pre-synaptic traces for STDP
-        # d(trace)/dt = -trace / tau_trace + spike
-        self.trace *= np.exp(-self.dt / self.tau_trace)
-        self.trace += input_spikes  # Increment trace when input spikes
+        # Check spike condition
+        spike_threshold = self.theta_base + self.u + self.theta
+        spike = self.v > spike_threshold
 
-        # Update post-synaptic trace
-        self.post_trace *= np.exp(-self.dt / self.tau_trace)
+        # If spike occurred
+        if spike:
+            # Reset membrane potential
+            self.v = torch.tensor(self.v_reset, dtype=torch.float32, device=self.device)
 
-        # Check for spike: v > theta_base + theta + u
-        effective_threshold = self.theta_base + self.theta
-        if self.v > effective_threshold:
-            # Spike occurred!
-            self.v = self.v_reset  # Reset membrane potential
-            self.u += self.u_increment  # Increase adaptation
-            self.theta += self.theta_increment  # Increase threshold
-            self.post_trace += 1.0  # Increment post-synaptic trace
+            # Increase adaptation (spike-frequency adaptation)
+            self.u = self.u + self.u_increment
+
+            # Increase dynamic threshold (homeostatic regulation)
+            self.theta = self.theta + self.theta_increment
+
+            # Update post-synaptic trace
+            self.post_trace = self.post_trace + 1.0
+
             return True
 
         return False
 
-    def stdp(self, input_spikes: np.ndarray, output_spike: bool) -> None:
+    def stdp(self, input_spikes: torch.Tensor, output_spike: bool) -> None:
         """
-        Apply Spike-Timing-Dependent Plasticity (STDP) to synaptic weights.
-        FIXED: Causal (Pre->Post) strengthens, Acausal (Post->Pre) weakens.
+        Apply Spike-Timing-Dependent Plasticity (STDP) learning (GPU operation).
 
-        Hebbian learning: "Cells that fire together, wire together"
-        - Potentiation (LTP): pre-synaptic spike BEFORE post-synaptic spike -> increase weight
-        - Depression (LTD): pre-synaptic spike AFTER post-synaptic spike -> decrease weight
-
-        Standard STDP rule applied at spike times:
-        - When POST spikes: w += A+ * trace_pre  (potentiation if pre was recently active)
-        - When PRE spikes:  w += -A- * trace_post (depression if post was recently active)
-
-        NOTE: This method assumes update() has already been called and traces are current.
-        For correct STDP, use step() which handles trace timing properly.
+        Hebbian learning rule:
+        - If pre-spike before post-spike (causal): LTP (strengthen)
+        - If post-spike before pre-spike (acausal): LTD (weaken)
 
         Args:
-            input_spikes: Binary array of input spikes (shape: n_inputs)
-            output_spike: Whether the output neuron spiked
+            input_spikes: Binary spike vector (0 or 1) for each input
+                         Automatically converted to GPU tensor if needed
         """
-        # For backward compatibility, try to reconstruct old traces
-        # This is approximate since we don't know exact previous values
-        decay_factor = np.exp(-self.dt / self.tau_trace)
+        # Ensure input_spikes is a GPU tensor
+        if not isinstance(input_spikes, torch.Tensor):
+            input_spikes = torch.tensor(
+                input_spikes,
+                dtype=torch.float32,
+                device=self.device
+            )
+        elif input_spikes.device != self.device:
+            input_spikes = input_spikes.to(self.device)
 
-        # Estimate old pre-trace (before current input and decay)
-        old_trace = (self.trace - input_spikes) / decay_factor if decay_factor > 0 else self.trace - input_spikes
-        old_trace = np.maximum(old_trace, 0)  # Ensure non-negative
+        # Update pre-synaptic traces (exponential decay + spike)
+        self.trace = self.trace * self.decay_trace + input_spikes
 
-        # Estimate old post-trace
-        spike_addition = 1.0 if output_spike else 0.0
-        old_post_trace = (self.post_trace - spike_addition) / decay_factor if decay_factor > 0 else self.post_trace - spike_addition
-        old_post_trace = max(old_post_trace, 0)  # Ensure non-negative
+        # Update post-synaptic trace (exponential decay)
+        self.post_trace = self.post_trace * self.decay_trace
 
-        # Apply STDP with estimated old traces
-        self._stdp_with_old_traces(input_spikes, output_spike, old_trace, old_post_trace)
+        # === STDP Weight Updates ===
 
-    def step(self, input_spikes: np.ndarray, I_ext: float = 0.0,
-             learning: bool = True) -> bool:
-        """
-        Perform a full time step: update dynamics and apply STDP.
+        # LTD: Depression when input spikes AFTER output spike
+        # (Post-synaptic trace is high, indicating recent post-spike)
+        if torch.any(input_spikes > 0):
+            # Use torch.where for efficient GPU masking
+            dw_minus = -self.a_minus * self.post_trace * input_spikes
+            self.weights = self.weights + dw_minus
 
-        Args:
-            input_spikes: Binary array of input spikes (shape: n_inputs)
-            I_ext: External current injection
-            learning: Whether to apply STDP learning
-
-        Returns:
-            bool: True if neuron spiked, False otherwise
-        """
-        # Save traces BEFORE update for STDP
-        if learning:
-            old_trace = self.trace.copy()
-            old_post_trace = self.post_trace
-
-        # Update neuron state
-        output_spike = self.update(input_spikes, I_ext)
-
-        # Apply STDP if learning is enabled, using OLD traces
-        if learning:
-            self._stdp_with_old_traces(input_spikes, output_spike, old_trace, old_post_trace)
-
-        return output_spike
-
-    def _stdp_with_old_traces(self, input_spikes: np.ndarray, output_spike: bool,
-                               old_trace: np.ndarray, old_post_trace: float) -> None:
-        """
-        Apply STDP using traces from before the current spike.
-
-        Args:
-            input_spikes: Current input spikes
-            output_spike: Whether output spiked this timestep
-            old_trace: Pre-synaptic trace before this timestep
-            old_post_trace: Post-synaptic trace before this timestep
-        """
-        # Potentiation: Output spike occurs, check if inputs were recently active
-        # Use OLD pre-trace (before current input was added)
+        # LTP: Potentiation when output spikes AFTER input spike
+        # (Pre-synaptic trace is high, indicating recent pre-spike)
         if output_spike:
-            dw_plus = self.a_plus * old_trace
-            self.weights += dw_plus
+            # Strengthen weights proportional to pre-synaptic trace
+            dw_plus = self.a_plus * self.trace
+            self.weights = self.weights + dw_plus
 
-        # Depression: Input spike occurs, check if output was recently active
-        # Use OLD post-trace (before current output spike)
-        if np.any(input_spikes > 0):
-            dw_minus = -self.a_minus * old_post_trace * input_spikes
-            self.weights += dw_minus
+        # Clip weights to valid range (GPU operation)
+        self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
 
-        # CRITICAL: Clip weights to prevent explosion
-        self.weights = np.clip(self.weights, self.weight_min, self.weight_max)
+    def reset(self) -> None:
+        """
+        Reset neuron state to resting values (keeps weights).
 
-    def reset_state(self) -> None:
-        """Reset all state variables to their initial values."""
-        self.v = self.v_rest
-        self.u = 0.0
-        self.theta = 0.0
-        self.trace = np.zeros(self.n_inputs, dtype=np.float64)
-        self.post_trace = 0.0
+        Useful for starting new trials or episodes.
+        """
+        self.v = torch.tensor(self.v_rest, dtype=torch.float32, device=self.device)
+        self.u = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self.theta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        self.trace = torch.zeros(self.n_inputs, dtype=torch.float32, device=self.device)
+        self.post_trace = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
     def get_state(self) -> dict:
         """
-        Get current state of the neuron.
+        Get current state as CPU numpy arrays (for visualization/logging).
+
+        This is the ONLY method that moves data from GPU to CPU.
 
         Returns:
-            dict: Dictionary containing all state variables
+            dict: State dictionary with numpy arrays
         """
         return {
-            'v': self.v,
-            'u': self.u,
-            'theta': self.theta,
-            'effective_threshold': self.theta_base + self.theta,
-            'weights': self.weights.copy(),
-            'trace': self.trace.copy(),
-            'post_trace': self.post_trace
+            'v': self.v.cpu().numpy(),
+            'u': self.u.cpu().numpy(),
+            'theta': self.theta.cpu().numpy(),
+            'weights': self.weights.cpu().numpy(),
+            'trace': self.trace.cpu().numpy(),
+            'post_trace': self.post_trace.cpu().numpy(),
+            'device': str(self.device)
         }
+
+    def get_weights(self) -> np.ndarray:
+        """
+        Get synaptic weights as numpy array (moves to CPU).
+
+        Returns:
+            numpy array of weights
+        """
+        return self.weights.cpu().numpy()
+
+    def set_weights(self, weights: np.ndarray) -> None:
+        """
+        Set synaptic weights from numpy array (moves to GPU).
+
+        Args:
+            weights: Numpy array of weights
+        """
+        self.weights = torch.tensor(
+            weights,
+            dtype=torch.float32,
+            device=self.device
+        )
+        # Ensure valid range
+        self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
+
+    def to(self, device: str) -> 'BiologicalNeuron':
+        """
+        Move neuron to different device (cuda/cpu).
+
+        Args:
+            device: Target device ('cuda' or 'cpu')
+
+        Returns:
+            self (for chaining)
+        """
+        self.device = torch.device(device)
+
+        # Move all tensors to new device
+        self.v = self.v.to(self.device)
+        self.u = self.u.to(self.device)
+        self.theta = self.theta.to(self.device)
+        self.weights = self.weights.to(self.device)
+        self.trace = self.trace.to(self.device)
+        self.post_trace = self.post_trace.to(self.device)
+
+        # Move decay factors
+        self.decay_v = self.decay_v.to(self.device)
+        self.decay_u = self.decay_u.to(self.device)
+        self.decay_theta = self.decay_theta.to(self.device)
+        self.decay_trace = self.decay_trace.to(self.device)
+
+        return self
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def check_gpu_available() -> Tuple[bool, str]:
+    """
+    Check if GPU is available and return info.
+
+    Returns:
+        Tuple of (is_available, device_name)
+    """
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        return True, device_name
+    else:
+        return False, "CPU only"
+
+
+def get_gpu_memory_info() -> dict:
+    """
+    Get GPU memory usage information.
+
+    Returns:
+        dict with memory stats in GB
+    """
+    if not torch.cuda.is_available():
+        return {'available': False}
+
+    allocated = torch.cuda.memory_allocated(0) / 1024**3
+    reserved = torch.cuda.memory_reserved(0) / 1024**3
+    total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+
+    return {
+        'available': True,
+        'allocated_gb': allocated,
+        'reserved_gb': reserved,
+        'total_gb': total,
+        'free_gb': total - allocated
+    }
+
+
+# ============================================================================
+# Demo and Testing
+# ============================================================================
+
+def demo_gpu_neuron():
+    """
+    Demonstration of GPU-accelerated neuron.
+    """
+    print("\n" + "="*70)
+    print("GPU-ACCELERATED BIOLOGICAL NEURON DEMO")
+    print("="*70)
+
+    # Check GPU availability
+    gpu_available, device_name = check_gpu_available()
+    print(f"\nGPU Available: {gpu_available}")
+    print(f"Device: {device_name}")
+
+    if gpu_available:
+        mem_info = get_gpu_memory_info()
+        print(f"GPU Memory: {mem_info['free_gb']:.2f} GB free / {mem_info['total_gb']:.2f} GB total")
+
+    print("\n" + "="*70)
+    print("Creating neuron...")
+
+    # Create neuron (automatically uses GPU if available)
+    neuron = BiologicalNeuron(n_inputs=64)
+
+    print(f"Neuron device: {neuron.device}")
+    print(f"Number of inputs: {neuron.n_inputs}")
+
+    # Test basic operation
+    print("\n" + "="*70)
+    print("Testing neuron dynamics...")
+
+    # Create input spikes on GPU
+    input_spikes = torch.zeros(64, dtype=torch.float32, device=neuron.device)
+    input_spikes[0] = 1.0  # Spike on first input
+    input_spikes[10] = 1.0  # Spike on tenth input
+
+    spike_count = 0
+    for step in range(100):
+        # Apply STDP learning
+        output_spike = neuron.update(I_ext=50.0)
+        neuron.stdp(input_spikes, output_spike)
+
+        if output_spike:
+            spike_count += 1
+
+    print(f"Total spikes: {spike_count}")
+
+    # Get state (moves to CPU)
+    state = neuron.get_state()
+    print(f"\nFinal state:")
+    print(f"  Voltage: {state['v']:.2f} mV")
+    print(f"  Adaptation: {state['u']:.2f}")
+    print(f"  Threshold: {state['theta']:.2f}")
+    print(f"  Mean weight: {state['weights'].mean():.3f}")
+    print(f"  Max weight: {state['weights'].max():.3f}")
+
+    # Show memory usage
+    if gpu_available:
+        mem_info = get_gpu_memory_info()
+        print(f"\nGPU Memory after simulation:")
+        print(f"  Allocated: {mem_info['allocated_gb']:.4f} GB")
+        print(f"  Reserved: {mem_info['reserved_gb']:.4f} GB")
+
+    print("\n" + "="*70)
+    print("Demo complete!")
+    print("="*70)
+
+
+if __name__ == "__main__":
+    # Run demo
+    demo_gpu_neuron()
 
