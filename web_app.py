@@ -107,6 +107,39 @@ def build_weight_matrix(circuit):
     return weight_matrix
 
 
+def move_brain_to_device(circuit, device: str):
+    """
+    Move all neurons in the circuit to the specified device.
+    
+    Args:
+        circuit: NeuralCircuit to move
+        device: Target device ('cuda' or 'cpu')
+    """
+    try:
+        import torch
+        target_device = torch.device(device)
+        for neuron in circuit.neurons:
+            if hasattr(neuron, 'to'):
+                neuron.to(device)
+            elif hasattr(neuron, 'device'):
+                # Move all tensors manually
+                if hasattr(neuron, 'v') and isinstance(neuron.v, torch.Tensor):
+                    neuron.v = neuron.v.to(target_device)
+                if hasattr(neuron, 'weights') and isinstance(neuron.weights, torch.Tensor):
+                    neuron.weights = neuron.weights.to(target_device)
+                if hasattr(neuron, 'trace') and isinstance(neuron.trace, torch.Tensor):
+                    neuron.trace = neuron.trace.to(target_device)
+                if hasattr(neuron, 'u') and isinstance(neuron.u, torch.Tensor):
+                    neuron.u = neuron.u.to(target_device)
+                if hasattr(neuron, 'theta') and isinstance(neuron.theta, torch.Tensor):
+                    neuron.theta = neuron.theta.to(target_device)
+                if hasattr(neuron, 'post_trace') and isinstance(neuron.post_trace, torch.Tensor):
+                    neuron.post_trace = neuron.post_trace.to(target_device)
+                neuron.device = target_device
+    except Exception as e:
+        print(f"Warning: Could not move brain to {device}: {e}")
+
+
 def predict_from_grid(circuit, grid_8x8, char_map=None):
     """
     Predict character from 8x8 grid.
@@ -168,15 +201,22 @@ def main():
     st.markdown("*Real-time neural network training and testing dashboard*")
     st.markdown("---")
 
-    # Load brain
+    # Initialize device preference (before sidebar so it's available)
+    if 'use_gpu' not in st.session_state:
+        hw_info = get_hardware_info()
+        st.session_state.use_gpu = hw_info['gpu'] == 'Available'
+    
+    # Load brain with device preference
     try:
         if 'brain' not in st.session_state:
-            st.session_state.brain = load_brain(BRAIN_FILE)
+            device = 'cuda' if st.session_state.use_gpu else 'cpu'
+            st.session_state.brain = load_brain(BRAIN_FILE, device=device)
             st.session_state.brain_loaded = True
     except Exception as e:
         st.error(f"❌ Error loading brain: {e}")
         st.info("Creating new brain...")
-        st.session_state.brain = load_brain(BRAIN_FILE)
+        device = 'cuda' if st.session_state.use_gpu else 'cpu'
+        st.session_state.brain = load_brain(BRAIN_FILE, device=device)
         st.session_state.brain_loaded = True
 
     brain = st.session_state.brain
@@ -217,11 +257,53 @@ def main():
             st.write(f"**GPU Memory**: {hw_info['gpu_memory']}")
 
         st.markdown("---")
+        
+        # Device selection
+        st.subheader("⚙️ Device Settings")
+        use_gpu = st.checkbox(
+            "Use GPU (CUDA)",
+            value=st.session_state.use_gpu,
+            disabled=hw_info['gpu'] != 'Available',
+            help="Enable GPU acceleration for faster training. Requires CUDA-capable GPU."
+        )
+        
+        if hw_info['gpu'] != 'Available' and use_gpu:
+            st.warning("⚠️ GPU not available. Using CPU instead.")
+            use_gpu = False
+        
+        # Update device preference if changed
+        if st.session_state.use_gpu != use_gpu:
+            st.session_state.use_gpu = use_gpu
+            # Move brain to selected device
+            if hasattr(st.session_state, 'brain') and st.session_state.brain is not None:
+                device = 'cuda' if use_gpu else 'cpu'
+                move_brain_to_device(st.session_state.brain, device)
+                st.success(f"✅ Brain moved to {device.upper()}")
+        
+        current_device = 'GPU (CUDA)' if st.session_state.use_gpu else 'CPU'
+        st.info(f"🔧 Current device: **{current_device}**")
+
+        st.markdown("---")
 
         # File info
         if os.path.exists(BRAIN_FILE):
             file_size = os.path.getsize(BRAIN_FILE) / 1024
             st.caption(f"📁 Brain file: {file_size:.2f} KB")
+    
+    # Load brain after device preference is set in sidebar
+    try:
+        if 'brain' not in st.session_state:
+            device = 'cuda' if st.session_state.use_gpu else 'cpu'
+            st.session_state.brain = load_brain(BRAIN_FILE, device=device)
+            st.session_state.brain_loaded = True
+    except Exception as e:
+        st.error(f"❌ Error loading brain: {e}")
+        st.info("Creating new brain...")
+        device = 'cuda' if st.session_state.use_gpu else 'cpu'
+        st.session_state.brain = load_brain(BRAIN_FILE, device=device)
+        st.session_state.brain_loaded = True
+
+    brain = st.session_state.brain
 
     # ========== Main Content: Tabs ==========
     tab1, tab2 = st.tabs(["🎓 Training", "🧪 Testing"])

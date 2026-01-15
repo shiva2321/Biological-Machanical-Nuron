@@ -119,12 +119,13 @@ def save_brain(circuit: NeuralCircuit, filename: str = 'my_brain.pkl') -> None:
     print("="*70)
 
 
-def load_brain(filename: str = 'my_brain.pkl') -> NeuralCircuit:
+def load_brain(filename: str = 'my_brain.pkl', device: str = None) -> NeuralCircuit:
     """
     Load neural circuit from disk, or create default brain if file doesn't exist.
 
     If file exists:
     - Deserialize and return saved circuit
+    - Move to specified device if provided
 
     If file doesn't exist:
     - Create new "Universal Brain" with default configuration
@@ -134,27 +135,62 @@ def load_brain(filename: str = 'my_brain.pkl') -> NeuralCircuit:
 
     Args:
         filename: Path to load file (default: 'my_brain.pkl')
+        device: Target device ('cuda' or 'cpu'). If None, auto-detects.
 
     Returns:
         Loaded or newly created NeuralCircuit
 
     Example:
         ```python
-        brain = load_brain('my_brain.pkl')
-        # If file exists: loads saved brain
-        # If not: creates new default brain
+        brain = load_brain('my_brain.pkl', device='cuda')
+        # If file exists: loads saved brain and moves to GPU
+        # If not: creates new default brain on GPU
         ```
     """
+    # Determine device
+    if device is None:
+        try:
+            import torch
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        except ImportError:
+            device = 'cpu'
+    
     if os.path.exists(filename):
         # Load existing brain
         with open(filename, 'rb') as f:
             circuit = pickle.load(f)
+
+        # Move to specified device
+        try:
+            import torch
+            target_device = torch.device(device)
+            for neuron in circuit.neurons:
+                if hasattr(neuron, 'to'):
+                    neuron.to(device)
+                elif hasattr(neuron, 'device'):
+                    # Move all tensors manually
+                    if hasattr(neuron, 'v') and isinstance(neuron.v, torch.Tensor):
+                        neuron.v = neuron.v.to(target_device)
+                    if hasattr(neuron, 'weights') and isinstance(neuron.weights, torch.Tensor):
+                        neuron.weights = neuron.weights.to(target_device)
+                    if hasattr(neuron, 'trace') and isinstance(neuron.trace, torch.Tensor):
+                        neuron.trace = neuron.trace.to(target_device)
+                    if hasattr(neuron, 'u') and isinstance(neuron.u, torch.Tensor):
+                        neuron.u = neuron.u.to(target_device)
+                    if hasattr(neuron, 'theta') and isinstance(neuron.theta, torch.Tensor):
+                        neuron.theta = neuron.theta.to(target_device)
+                    if hasattr(neuron, 'post_trace') and isinstance(neuron.post_trace, torch.Tensor):
+                        neuron.post_trace = neuron.post_trace.to(target_device)
+                    neuron.device = target_device
+        except Exception as e:
+            print(f"Warning: Could not move brain to {device}: {e}")
 
         print("="*70)
         print("BRAIN LOADED")
         print("="*70)
         print(f"File: {filename}")
         print(f"Size: {os.path.getsize(filename) / 1024:.2f} KB")
+        print(f"Device: {device}")
         print(f"\nArchitecture:")
         print(f"  Neurons: {circuit.num_neurons}")
         print(f"  Input Channels: {circuit.input_channels}")
@@ -169,14 +205,19 @@ def load_brain(filename: str = 'my_brain.pkl') -> NeuralCircuit:
         print("CREATING NEW BRAIN")
         print("="*70)
         print("No existing brain found. Initializing Universal Brain...")
+        print(f"Device: {device}")
         print()
+
+        # Add device to neuron params
+        neuron_params = DEFAULT_CONFIG['neuron_params'].copy()
+        neuron_params['device'] = device
 
         circuit = NeuralCircuit(
             num_neurons=DEFAULT_CONFIG['num_neurons'],
             input_channels=DEFAULT_CONFIG['input_channels'],
             dt=DEFAULT_CONFIG['dt'],
             max_delay=DEFAULT_CONFIG['max_delay'],
-            neuron_params=DEFAULT_CONFIG['neuron_params']
+            neuron_params=neuron_params
         )
 
         # Initialize weights with small random values

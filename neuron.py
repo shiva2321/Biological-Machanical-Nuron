@@ -121,13 +121,32 @@ class BiologicalNeuron:
         self.weight_min = weight_min
         self.weight_max = weight_max
 
+        # Learning and retention parameters
+        self.learning_rate_decay = 0.9999  # Decay learning rate over time
+        self.current_a_plus = a_plus
+        self.current_a_minus = a_minus
+        self.weight_decay = 0.0001  # L2 regularization to prevent overfitting
+        self.homeostatic_scale = 1.0  # Homeostatic plasticity scaling
+        self.target_firing_rate = 0.1  # Target firing rate for homeostasis
+        self.firing_rate_history = []  # Track firing rate for homeostasis
+        self.update_count = 0  # Track number of updates for adaptive learning
+
         # Initialize state variables as GPU tensors (torch.float32 for speed)
         self.v = torch.tensor(v_rest, dtype=torch.float32, device=self.device)
         self.u = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         self.theta = torch.tensor(0.0, dtype=torch.float32, device=self.device)
 
-        # Initialize synaptic weights (random initialization)
-        self.weights = torch.rand(n_inputs, dtype=torch.float32, device=self.device) * 0.5
+        # Initialize synaptic weights with Xavier/Glorot initialization (better than random)
+        # Xavier init: weights ~ U(-sqrt(6/(n_in+n_out)), sqrt(6/(n_in+n_out)))
+        # For single neuron: n_in = n_inputs, n_out = 1
+        xavier_bound = np.sqrt(6.0 / (n_inputs + 1))
+        self.weights = torch.empty(n_inputs, dtype=torch.float32, device=self.device)
+        torch.nn.init.uniform_(self.weights, -xavier_bound * 0.5, xavier_bound * 0.5)
+        # Ensure weights are positive and within bounds
+        self.weights = torch.clamp(self.weights, weight_min, weight_max * 0.3)  # Start smaller
+        
+        # Initialize learning and retention parameters (with defaults for backward compatibility)
+        self._init_learning_params()
 
         # Initialize STDP traces
         self.trace = torch.zeros(n_inputs, dtype=torch.float32, device=self.device)
@@ -154,6 +173,52 @@ class BiologicalNeuron:
             dtype=torch.float32,
             device=self.device
         )
+    
+    def _init_learning_params(self):
+        """
+        Initialize learning and retention parameters.
+        Called after weights are set to ensure backward compatibility with saved brains.
+        """
+        # Learning and retention parameters
+        if not hasattr(self, 'learning_rate_decay'):
+            self.learning_rate_decay = 0.9999  # Decay learning rate over time
+        if not hasattr(self, 'current_a_plus'):
+            self.current_a_plus = getattr(self, 'a_plus', 0.1)
+        if not hasattr(self, 'current_a_minus'):
+            self.current_a_minus = getattr(self, 'a_minus', 0.1)
+        if not hasattr(self, 'weight_decay'):
+            self.weight_decay = 0.0001  # L2 regularization to prevent overfitting
+        if not hasattr(self, 'homeostatic_scale'):
+            self.homeostatic_scale = 1.0  # Homeostatic plasticity scaling
+        if not hasattr(self, 'target_firing_rate'):
+            self.target_firing_rate = 0.1  # Target firing rate for homeostasis
+        if not hasattr(self, 'firing_rate_history'):
+            self.firing_rate_history = []  # Track firing rate for homeostasis
+        if not hasattr(self, 'update_count'):
+            self.update_count = 0  # Track number of updates for adaptive learning
+        
+        # Weight consolidation (for preventing catastrophic forgetting)
+        # Get device from existing weights if available
+        if hasattr(self, 'weights'):
+            device = self.weights.device if isinstance(self.weights, torch.Tensor) else self.device
+            if not hasattr(self, 'consolidated_weights'):
+                self.consolidated_weights = self.weights.clone()  # Store consolidated weights
+            if not hasattr(self, 'importance_weights'):
+                self.importance_weights = torch.ones(
+                    self.n_inputs, 
+                    dtype=torch.float32, 
+                    device=device
+                )  # Importance for each weight
+        else:
+            # Fallback if weights don't exist yet
+            if not hasattr(self, 'consolidated_weights'):
+                self.consolidated_weights = None
+            if not hasattr(self, 'importance_weights'):
+                self.importance_weights = torch.ones(
+                    self.n_inputs, 
+                    dtype=torch.float32, 
+                    device=self.device
+                )
 
     def update(self, I_ext: float = 0.0) -> bool:
         """
@@ -167,6 +232,10 @@ class BiologicalNeuron:
         Returns:
             bool: True if neuron spiked, False otherwise
         """
+        # Ensure learning parameters are initialized (for backward compatibility with saved brains)
+        if not hasattr(self, 'homeostatic_scale'):
+            self._init_learning_params()
+        
         # Use no_grad context to reduce overhead (we're not backpropagating)
         with torch.no_grad():
             # Convert I_ext to scalar float efficiently
@@ -179,7 +248,9 @@ class BiologicalNeuron:
                 I_ext_scalar = float(I_ext)
 
             # Compute synaptic input (I_syn = weights · trace)
-            I_syn = torch.matmul(self.weights, self.trace)
+            # Apply homeostatic scaling to weights for stability
+            scaled_weights = self.weights * self.homeostatic_scale
+            I_syn = torch.matmul(scaled_weights, self.trace)
 
             # Update membrane potential (Euler integration)
             # dv/dt = (-v + v_rest + I_syn + I_ext - u) / tau_m
@@ -251,7 +322,11 @@ class BiologicalNeuron:
 
     def stdp(self, input_spikes: torch.Tensor, output_spike: bool) -> None:
         """
-        Apply Spike-Timing-Dependent Plasticity (STDP) learning (GPU operation).
+        Apply Spike-Timing-Dependent Plasticity (STDP) learning with advanced features:
+        - Adaptive learning rates (decay over time)
+        - Weight decay regularization
+        - Homeostatic plasticity
+        - Weight consolidation (prevent catastrophic forgetting)
 
         Hebbian learning rule:
         - If pre-spike before post-spike (causal): LTP (strengthen)
@@ -261,6 +336,10 @@ class BiologicalNeuron:
             input_spikes: Binary spike vector (0 or 1) for each input
                          Automatically converted to GPU tensor if needed
         """
+        # Ensure learning parameters are initialized (for backward compatibility with saved brains)
+        if not hasattr(self, 'homeostatic_scale'):
+            self._init_learning_params()
+        
         # Use no_grad context for weight updates (STDP doesn't need gradients)
         with torch.no_grad():
             # Ensure input_spikes is a GPU tensor
@@ -279,24 +358,82 @@ class BiologicalNeuron:
             # Update post-synaptic trace (exponential decay)
             self.post_trace = self.post_trace * self.decay_trace
 
+            # Adaptive learning rate (decay over time for better convergence)
+            self.update_count += 1
+            if self.update_count % 100 == 0:  # Update every 100 steps
+                self.current_a_plus = self.a_plus * (self.learning_rate_decay ** (self.update_count / 100))
+                self.current_a_minus = self.a_minus * (self.learning_rate_decay ** (self.update_count / 100))
+                # Don't let learning rate go too low
+                self.current_a_plus = max(self.current_a_plus, self.a_plus * 0.1)
+                self.current_a_minus = max(self.current_a_minus, self.a_minus * 0.1)
+
+            # Track firing rate for homeostatic plasticity
+            if output_spike:
+                self.firing_rate_history.append(1.0)
+            else:
+                self.firing_rate_history.append(0.0)
+            
+            # Keep only recent history (last 1000 updates)
+            if len(self.firing_rate_history) > 1000:
+                self.firing_rate_history.pop(0)
+            
+            # Update homeostatic scaling based on firing rate
+            if len(self.firing_rate_history) >= 100:
+                recent_firing_rate = np.mean(self.firing_rate_history[-100:])
+                # If firing too much, reduce excitability; if too little, increase
+                if recent_firing_rate > self.target_firing_rate * 1.5:
+                    self.homeostatic_scale *= 0.99  # Reduce excitability
+                elif recent_firing_rate < self.target_firing_rate * 0.5:
+                    self.homeostatic_scale *= 1.01  # Increase excitability
+                self.homeostatic_scale = np.clip(self.homeostatic_scale, 0.5, 2.0)
+
             # === STDP Weight Updates ===
 
+            # Ensure importance_weights is on the correct device
+            if self.importance_weights.device != self.device:
+                self.importance_weights = self.importance_weights.to(self.device)
+            
+            # Ensure consolidated_weights is on the correct device
+            if hasattr(self, 'consolidated_weights') and isinstance(self.consolidated_weights, torch.Tensor):
+                if self.consolidated_weights.device != self.device:
+                    self.consolidated_weights = self.consolidated_weights.to(self.device)
+
             # LTD: Depression when input spikes AFTER output spike
-            # (Post-synaptic trace is high, indicating recent post-spike)
             if torch.any(input_spikes > 0):
-                # Use torch.where for efficient GPU masking
-                dw_minus = -self.a_minus * self.post_trace * input_spikes
+                dw_minus = -self.current_a_minus * self.post_trace * input_spikes * self.homeostatic_scale
+                # Apply weight consolidation (protect important weights)
+                importance_factor = 1.0 / (1.0 + self.importance_weights)
+                dw_minus = dw_minus * importance_factor
                 self.weights = self.weights + dw_minus
 
             # LTP: Potentiation when output spikes AFTER input spike
-            # (Pre-synaptic trace is high, indicating recent pre-spike)
             if output_spike:
-                # Strengthen weights proportional to pre-synaptic trace
-                dw_plus = self.a_plus * self.trace
+                dw_plus = self.current_a_plus * self.trace * self.homeostatic_scale
+                # Apply weight consolidation
+                importance_factor = 1.0 / (1.0 + self.importance_weights)
+                dw_plus = dw_plus * importance_factor
                 self.weights = self.weights + dw_plus
+                
+                # Update importance weights (weights that fire are more important)
+                self.importance_weights = self.importance_weights + 0.01 * self.trace
+
+            # Weight decay regularization (L2 regularization to prevent overfitting)
+            self.weights = self.weights * (1.0 - self.weight_decay)
 
             # Clip weights to valid range (GPU operation)
             self.weights = torch.clamp(self.weights, self.weight_min, self.weight_max)
+            
+            # Update consolidated weights (exponential moving average for stability)
+            # This helps retain knowledge over time
+            if self.consolidated_weights is not None:
+                # Ensure consolidated_weights is on correct device
+                if self.consolidated_weights.device != self.device:
+                    self.consolidated_weights = self.consolidated_weights.to(self.device)
+                consolidation_rate = 0.0001  # Slow consolidation
+                self.consolidated_weights = (1.0 - consolidation_rate) * self.consolidated_weights + consolidation_rate * self.weights
+            else:
+                # Initialize consolidated_weights if it doesn't exist
+                self.consolidated_weights = self.weights.clone()
 
     def reset(self) -> None:
         """
@@ -385,6 +522,12 @@ class BiologicalNeuron:
         self.decay_u = self.decay_u.to(self.device)
         self.decay_theta = self.decay_theta.to(self.device)
         self.decay_trace = self.decay_trace.to(self.device)
+        
+        # Move learning-related tensors if they exist
+        if hasattr(self, 'importance_weights') and isinstance(self.importance_weights, torch.Tensor):
+            self.importance_weights = self.importance_weights.to(self.device)
+        if hasattr(self, 'consolidated_weights') and isinstance(self.consolidated_weights, torch.Tensor):
+            self.consolidated_weights = self.consolidated_weights.to(self.device)
 
         return self
 

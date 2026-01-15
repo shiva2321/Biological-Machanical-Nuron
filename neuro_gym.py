@@ -108,19 +108,20 @@ class NeuroGym:
         print(f"  Input channels: {circuit.input_channels}")
         print()
 
-    def train_step(self, mode='supervised') -> Dict[str, float]:
+    def train_step(self, mode='supervised', num_time_steps: int = 5) -> Dict[str, float]:
         """
-        Perform one training step (single sample).
+        Perform one training step with multiple time steps for better temporal learning.
 
         Process:
         1. Select random sample
-        2. Present input to circuit
+        2. Present input to circuit for multiple time steps
         3. If supervised: Apply teacher forcing (stimulate correct output)
-        4. Allow STDP to update weights
+        4. Allow STDP to update weights over multiple steps
         5. Return metrics
 
         Args:
             mode: 'supervised' (with teacher forcing) or 'unsupervised'
+            num_time_steps: Number of time steps to simulate (default 5 for temporal learning)
 
         Returns:
             Dictionary with step metrics (correct, output_neuron, etc.)
@@ -137,25 +138,49 @@ class NeuroGym:
         I_ext = np.ones(self.circuit.num_neurons) * self.baseline_current
 
         # Teacher forcing: Strongly stimulate correct output neuron
+        # Gradually reduce teacher forcing over time (curriculum learning)
         if mode == 'supervised':
             if target_label < self.circuit.num_neurons:
-                I_ext[target_label] = self.teacher_current
+                # Adaptive teacher forcing: stronger early, weaker later
+                # This helps the network learn gradually
+                adaptive_teacher = self.teacher_current * (1.0 - 0.1 * min(self.current_epoch / 100, 1.0))
+                I_ext[target_label] = adaptive_teacher
 
-        # Forward pass through circuit
-        output_spikes = self.circuit.step(
-            input_spikes=input_spikes,
-            I_ext=I_ext,
-            learning=(mode == 'supervised')  # Only learn in supervised mode
-        )
+        # Multiple time steps for better temporal learning and stability
+        output_spikes = None
+        for t in range(num_time_steps):
+            # Forward pass through circuit
+            output_spikes = self.circuit.step(
+                input_spikes=input_spikes,
+                I_ext=I_ext,
+                learning=(mode == 'supervised')  # Only learn in supervised mode
+            )
+            
+            # Reduce teacher forcing over time steps (fade out)
+            if mode == 'supervised' and target_label < self.circuit.num_neurons:
+                I_ext[target_label] = I_ext[target_label] * 0.9  # Gradually reduce
 
-        # Determine predicted class (first firing neuron)
+        # Determine predicted class (first firing neuron or most active)
         fired_neurons = np.where(output_spikes)[0]
         if len(fired_neurons) > 0:
             predicted_label = fired_neurons[0]
             correct = (predicted_label == target_label)
         else:
-            predicted_label = -1  # No neuron fired
-            correct = False
+            # If no neuron fired, use voltage-based prediction (most active)
+            try:
+                import torch
+                voltages = []
+                for i in range(self.circuit.num_neurons):
+                    v = self.circuit.neurons[i].v
+                    if isinstance(v, torch.Tensor):
+                        voltages.append(v.cpu().item())
+                    else:
+                        voltages.append(float(v))
+                voltages = np.array(voltages)
+                predicted_label = np.argmax(voltages)
+            except:
+                predicted_label = -1
+            correct = (predicted_label == target_label)
 
         # Calculate loss (0 if correct, 1 if wrong)
         loss = 0.0 if correct else 1.0
@@ -168,15 +193,17 @@ class NeuroGym:
             'num_fired': len(fired_neurons)
         }
 
-    def evaluate(self, verbose: bool = False) -> Tuple[float, Dict]:
+    def evaluate(self, verbose: bool = False, num_time_steps: int = 5) -> Tuple[float, Dict]:
         """
         Evaluate circuit on all samples without teacher forcing.
+        Uses multiple time steps for more stable predictions.
 
         Tests learned behavior by presenting inputs and checking
         which output neurons fire (no supervision).
 
         Args:
             verbose: If True, print per-sample results
+            num_time_steps: Number of time steps for evaluation (default 5)
 
         Returns:
             accuracy: Fraction of correct predictions
@@ -196,21 +223,37 @@ class NeuroGym:
             # Baseline current only (no teacher forcing)
             I_ext = np.ones(self.circuit.num_neurons) * self.baseline_current
 
-            # Forward pass (no learning)
-            output_spikes = self.circuit.step(
-                input_spikes=input_spikes,
-                I_ext=I_ext,
-                learning=False
-            )
+            # Multiple time steps for more stable evaluation
+            output_spikes = None
+            for t in range(num_time_steps):
+                output_spikes = self.circuit.step(
+                    input_spikes=input_spikes,
+                    I_ext=I_ext,
+                    learning=False
+                )
 
-            # Get prediction
+            # Get prediction (prefer spikes, fallback to voltage)
             fired_neurons = np.where(output_spikes)[0]
             if len(fired_neurons) > 0:
                 predicted_label = fired_neurons[0]
                 correct = (predicted_label == target_label)
             else:
-                predicted_label = -1
-                correct = False
+                # Use voltage-based prediction if no spikes
+                try:
+                    import torch
+                    voltages = []
+                    for i in range(self.circuit.num_neurons):
+                        v = self.circuit.neurons[i].v
+                        if isinstance(v, torch.Tensor):
+                            voltages.append(v.cpu().item())
+                        else:
+                            voltages.append(float(v))
+                    voltages = np.array(voltages)
+                    predicted_label = np.argmax(voltages)
+                    correct = (predicted_label == target_label)
+                except:
+                    predicted_label = -1
+                    correct = False
 
             if correct:
                 correct_count += 1
