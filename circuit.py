@@ -30,7 +30,8 @@ class Connection:
         delay: Axonal delay in time steps
     """
 
-    def __init__(self, source_id: int, target_id: int, weight: float, delay: int):
+    def __init__(self, source_id: int, target_id: int, weight: float, delay: int,
+                 conn_id: int = 0, active: bool = True):
         """
         Initialize a synaptic connection.
 
@@ -39,11 +40,18 @@ class Connection:
             target_id: Post-synaptic neuron index
             weight: Connection strength
             delay: Transmission delay in time steps (ms if dt=1.0)
+            conn_id: Unique connection id, assigned by NeuralCircuit.connect()
+            active: Whether this connection currently participates in the
+                circuit. Structural plasticity (see structure_pathway.py)
+                prunes edges by masking this flag rather than deleting the
+                Connection, so pruned edges can be inspected/audited later.
         """
         self.source_id = source_id
         self.target_id = target_id
         self.weight = weight
         self.delay = delay
+        self.conn_id = conn_id
+        self.active = active
 
 
 class SpikeBuffer:
@@ -71,6 +79,25 @@ class SpikeBuffer:
                        for _ in range(max_delay + 1)]
 
         self.current_index = 0
+
+    def grow(self, new_num_neurons: int) -> None:
+        """
+        Extend buffer capacity to cover new_num_neurons (append-only).
+
+        Used when the structure pathway activates a new neuron from the
+        fixed-capacity pool. Existing (pending, undelivered) spikes are
+        preserved; the new slots start at zero.
+
+        Args:
+            new_num_neurons: Target neuron count. No-op if not larger than
+                the current capacity.
+        """
+        if new_num_neurons <= self.num_neurons:
+            return
+        extra = new_num_neurons - self.num_neurons
+        for i in range(len(self.buffer)):
+            self.buffer[i] = np.concatenate([self.buffer[i], np.zeros(extra, dtype=np.float64)])
+        self.num_neurons = new_num_neurons
 
     def add_spike(self, neuron_id: int, weight: float, delay: int) -> None:
         """
@@ -127,7 +154,8 @@ class NeuralCircuit:
         input_channels: int,
         dt: float = 1.0,
         max_delay: int = 10,
-        neuron_params: Optional[Dict] = None
+        neuron_params: Optional[Dict] = None,
+        max_neurons: Optional[int] = None
     ):
         """
         Initialize neural circuit.
@@ -138,11 +166,16 @@ class NeuralCircuit:
             dt: Time step (ms)
             max_delay: Maximum axonal delay (time steps)
             neuron_params: Optional dict of parameters to pass to all neurons
+            max_neurons: Fixed-capacity pool ceiling for structural growth
+                (see structure_pathway.py). Defaults to num_neurons, i.e. no
+                growth room, which keeps existing callers' behavior
+                unchanged unless they opt in with a larger value.
         """
         self.num_neurons = num_neurons
         self.input_channels = input_channels
         self.dt = dt
         self.max_delay = max_delay
+        self.max_neurons = max_neurons if max_neurons is not None else num_neurons
 
         # Default neuron parameters
         default_params = {
@@ -160,14 +193,25 @@ class NeuralCircuit:
         if neuron_params is not None:
             default_params.update(neuron_params)
 
+        # Saved so add_neuron() can construct pool slots identical to the
+        # circuit's original population.
+        self._neuron_params = default_params
+
         # Create population of neurons
         self.neurons: List[BiologicalNeuron] = []
         for i in range(num_neurons):
             neuron = BiologicalNeuron(**default_params)
             self.neurons.append(neuron)
 
+        # Which neurons currently participate in the circuit. Structural
+        # plasticity masks neurons inactive (orphan removal) rather than
+        # deleting them, and activates pre-existing pool slots via
+        # add_neuron() rather than resizing anything mid-training.
+        self.neuron_active: List[bool] = [True] * num_neurons
+
         # Connection matrix: connections[i] = list of connections FROM neuron i
         self.connections: List[List[Connection]] = [[] for _ in range(num_neurons)]
+        self._next_conn_id = 0
 
         # Spike buffer for handling axonal delays
         self.spike_buffer = SpikeBuffer(max_delay, num_neurons)
@@ -185,7 +229,7 @@ class NeuralCircuit:
         target_id: int,
         weight: float,
         delay: int = 1
-    ) -> None:
+    ) -> Connection:
         """
         Create a synaptic connection between two neurons.
 
@@ -194,6 +238,10 @@ class NeuralCircuit:
             target_id: Index of post-synaptic neuron (0 to num_neurons-1)
             weight: Synaptic strength (can be positive or negative)
             delay: Axonal transmission delay in time steps (default: 1)
+
+        Returns:
+            The created Connection (callers that pre-date this return value
+            simply ignore it, so this is backward compatible).
 
         Raises:
             ValueError: If neuron indices are out of range
@@ -206,8 +254,77 @@ class NeuralCircuit:
             raise ValueError(f"Delay {delay} outside valid range [0, {self.max_delay}]")
 
         # Create and store connection
-        connection = Connection(source_id, target_id, weight, delay)
+        connection = Connection(source_id, target_id, weight, delay, conn_id=self._next_conn_id)
+        self._next_conn_id += 1
         self.connections[source_id].append(connection)
+        return connection
+
+    def add_neuron(self) -> Optional[int]:
+        """
+        Activate a new neuron from the fixed-capacity pool.
+
+        Used by structural plasticity to insert relay nodes. This never
+        resizes any existing GPU tensor mid-training: each neuron owns its
+        own independently-sized tensors (BiologicalNeuron.weights is sized
+        by input_channels, which never changes), so growing the population
+        just means constructing one more of them, up to the max_neurons cap.
+
+        Returns:
+            The new neuron's index, or None if max_neurons capacity is
+            already reached (callers should treat this as "skip this
+            growth event," not an error).
+        """
+        if self.num_neurons >= self.max_neurons:
+            return None
+
+        neuron = BiologicalNeuron(**self._neuron_params)
+        idx = self.num_neurons
+        self.neurons.append(neuron)
+        self.neuron_active.append(True)
+        self.connections.append([])
+        self.spike_buffer.grow(idx + 1)
+        self.current_output_spikes = np.append(self.current_output_spikes, False)
+        self.num_neurons = idx + 1
+        return idx
+
+    def deactivate_neuron(self, neuron_id: int) -> None:
+        """
+        Mask a neuron out of the circuit (orphan removal), without deleting
+        it. A deactivated neuron stops updating and never spikes; its
+        connections (incoming and outgoing) are deactivated alongside it so
+        stale edges can't silently reference a masked neuron.
+
+        Args:
+            neuron_id: Index of neuron to deactivate
+        """
+        if neuron_id < 0 or neuron_id >= self.num_neurons:
+            raise ValueError(f"Neuron {neuron_id} out of range [0, {self.num_neurons})")
+
+        self.neuron_active[neuron_id] = False
+        for connection in self.connections[neuron_id]:
+            connection.active = False
+        for source_connections in self.connections:
+            for connection in source_connections:
+                if connection.target_id == neuron_id:
+                    connection.active = False
+
+    def deactivate_connection(self, source_id: int, conn_id: int) -> bool:
+        """
+        Mask a single connection inactive (structural pruning), without
+        removing it from the connection list.
+
+        Args:
+            source_id: Index of the connection's source neuron
+            conn_id: The connection's unique id (from Connection.conn_id)
+
+        Returns:
+            True if a matching active connection was found and deactivated.
+        """
+        for connection in self.connections[source_id]:
+            if connection.conn_id == conn_id and connection.active:
+                connection.active = False
+                return True
+        return False
 
     def set_inhibition(self, strength: float) -> None:
         """
@@ -322,10 +439,10 @@ class NeuralCircuit:
             if num_spiked_last_step > 0:
                 # Each neuron that fired inhibits all others
                 for i, neuron in enumerate(self.neurons):
-                    if self.current_output_spikes[i]:
+                    if self.current_output_spikes[i] and self.neuron_active[i]:
                         # This neuron fired - it inhibits others
                         for j, other_neuron in enumerate(self.neurons):
-                            if i != j:
+                            if i != j and self.neuron_active[j]:
                                 # Decrease membrane potential (inhibition)
                                 # Handle both GPU and CPU tensors
                                 if isinstance(other_neuron.v, torch.Tensor):
@@ -352,6 +469,11 @@ class NeuralCircuit:
             input_spikes_tensor = input_spikes
 
         for i, neuron in enumerate(self.neurons):
+            # Masked (inactive) pool slots and orphan-removed neurons stay
+            # silent: no update, no spike, no current draw.
+            if not self.neuron_active[i]:
+                continue
+
             # Combine external inputs and internal (delayed) inputs
             # External inputs go through the neuron's learned weights
             # Internal inputs are direct current injections (already weighted)
@@ -372,6 +494,8 @@ class NeuralCircuit:
             if spiked:
                 # This neuron fired - send spike to all its targets
                 for connection in self.connections[i]:
+                    if not connection.active or not self.neuron_active[connection.target_id]:
+                        continue
                     self.spike_buffer.add_spike(
                         neuron_id=connection.target_id,
                         weight=connection.weight,
@@ -478,18 +602,19 @@ class NeuralCircuit:
 
         for source_id in range(self.num_neurons):
             for connection in self.connections[source_id]:
-                matrix[source_id, connection.target_id] += connection.weight
+                if connection.active:
+                    matrix[source_id, connection.target_id] += connection.weight
 
         return matrix
 
     def get_num_connections(self) -> int:
         """
-        Get total number of connections in the circuit.
+        Get total number of active connections in the circuit.
 
         Returns:
-            Total connection count
+            Active connection count (pruned/masked connections excluded)
         """
-        return sum(len(conn_list) for conn_list in self.connections)
+        return sum(1 for conn_list in self.connections for c in conn_list if c.active)
 
     def __repr__(self) -> str:
         """String representation of the circuit."""
@@ -514,14 +639,18 @@ class NeuralCircuit:
         weights = []
         for source_connections in self.connections:
             for conn in source_connections:
-                delays.append(conn.delay)
-                weights.append(conn.weight)
+                if conn.active:
+                    delays.append(conn.delay)
+                    weights.append(conn.weight)
+
+        num_active_neurons = sum(1 for active in self.neuron_active if active)
 
         summary_lines = [
             "="*60,
             "NEURAL CIRCUIT SUMMARY",
             "="*60,
-            f"Neurons: {self.num_neurons}",
+            f"Neurons: {num_active_neurons} active / {self.num_neurons} allocated "
+            f"(pool capacity {self.max_neurons})",
             f"Input Channels: {self.input_channels}",
             f"Time Step (dt): {self.dt}ms",
             f"Max Delay: {self.max_delay}ms",
