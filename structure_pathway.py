@@ -139,6 +139,19 @@ class StructuralPlasticityConfig:
     conn_a_minus/relay_init_scale/circuit scale change materially, since
     the numbers are only as good as how representative that run is of your
     actual circuit.
+
+    To build an ablation-isolation arm (e.g. "STDP-only, no structural
+    change" as a middle rung between a bare circuit and the full pathway),
+    use the enable_* flags below -- do NOT try to threshold a mechanism
+    off by cranking lambda_edge/tau_w/tau_delta to an extreme. That does
+    not work: the instability check is `sigma_k^2 > lambda_edge * |mu_k|`,
+    and as |mu_k| -> 0 (common for an edge whose LTP/LTD roughly balance,
+    or that's merely decaying quietly) the right-hand side shrinks toward
+    zero right along with it, regardless of how large lambda_edge is set.
+    Any edge with mu_k near zero and any nonzero variance still trips the
+    flag at *any* lambda_edge. There is no threshold value that reliably
+    disables growth from this rule alone -- set enable_instability_growth
+    = False instead.
     """
     window_T: int = 50          # steps of Δw history required before an edge is eligible for growth/prune checks
     lambda_edge: float = 10.0   # instability flag: sigma_k^2 > lambda_edge * |mu_k|  (calibrated: p90 of sigma_k^2/|mu_k| ~= 10.5)
@@ -156,6 +169,15 @@ class StructuralPlasticityConfig:
     conn_weight_max: float = 10.0
     seed: Optional[int] = None
 
+    # Explicit, orthogonal per-mechanism kill switches for building ablation
+    # arms. All default True (full pathway). Prefer these over threshold
+    # extremes -- see the lambda_edge note above for why that doesn't work.
+    enable_connection_stdp: bool = True         # False => internal connections never change at all (frozen topology + weights)
+    enable_instability_growth: bool = True      # False => SMGrNN relay insertion never fires
+    enable_random_growth: bool = True           # False => secondary Bernoulli exploratory growth never fires
+    enable_pruning: bool = True                 # False => mandatory pruning never fires
+    enable_synaptic_normalization: bool = True  # False => SORN synaptic normalization never fires
+
 
 class SelfConnectingPathway:
     """
@@ -164,6 +186,16 @@ class SelfConnectingPathway:
     independently -- matching the spec's "one unit type, four toggleable
     properties" design law (SONU_SPEC_V2.md Section 0) and the ablation
     ladder's requirement to isolate +connect from everything else.
+
+    Building ablation arms (e.g. for the Section 6 ladder): use
+    StructuralPlasticityConfig's enable_* flags, not extreme threshold
+    values -- lambda_edge in particular cannot be raised high enough to
+    reliably disable instability growth (see the config docstring). For
+    example, an "STDP-only, frozen topology" arm to compare against a bare
+    circuit and the full pathway:
+        StructuralPlasticityConfig(enable_instability_growth=False,
+                                    enable_random_growth=False,
+                                    enable_pruning=False)
 
     Usage:
         circuit = NeuralCircuit(num_neurons=20, input_channels=10, max_neurons=60)
@@ -175,14 +207,21 @@ class SelfConnectingPathway:
     """
 
     def __init__(self, circuit: NeuralCircuit, config: Optional[StructuralPlasticityConfig] = None):
-        if circuit.max_neurons <= circuit.num_neurons:
-            raise ValueError(
-                "circuit.max_neurons must exceed circuit.num_neurons for the structure "
-                "pathway to have room to grow relay neurons; construct the circuit with "
-                "NeuralCircuit(..., max_neurons=<capacity>)."
-            )
         self.circuit = circuit
         self.cfg = config or StructuralPlasticityConfig()
+
+        # Only instability growth calls circuit.add_neuron() (random growth
+        # only adds edges between existing neurons), so pool room is only
+        # required when it's actually enabled -- a growth-free ablation arm
+        # (enable_instability_growth=False) shouldn't be forced to allocate
+        # capacity it will never use.
+        if self.cfg.enable_instability_growth and circuit.max_neurons <= circuit.num_neurons:
+            raise ValueError(
+                "circuit.max_neurons must exceed circuit.num_neurons when "
+                "enable_instability_growth is True; either construct the circuit "
+                "with NeuralCircuit(..., max_neurons=<capacity>) or set "
+                "config.enable_instability_growth = False for a growth-free run."
+            )
         self._rng = random.Random(self.cfg.seed)
         self._np_rng = np.random.default_rng(self.cfg.seed)
 
@@ -219,11 +258,17 @@ class SelfConnectingPathway:
             'grown_relay': [], 'grown_random': [], 'pruned': [], 'orphans_removed': []
         }
         if self._step_count % self.cfg.prune_period_s == 0:
-            events['grown_relay'] = self._instability_growth()
-            events['grown_random'] = self._random_growth()
-            events['pruned'] = self._prune()
+            if self.cfg.enable_instability_growth:
+                events['grown_relay'] = self._instability_growth()
+            if self.cfg.enable_random_growth:
+                events['grown_random'] = self._random_growth()
+            if self.cfg.enable_pruning:
+                events['pruned'] = self._prune()
+            # Always safe to call: a no-op whenever _relay_ids is empty,
+            # which it always is if instability growth was never enabled.
             events['orphans_removed'] = self._remove_orphans()
-            self._synaptic_normalization()
+            if self.cfg.enable_synaptic_normalization:
+                self._synaptic_normalization()
         return events
 
     def _apply_connection_stdp(self, output_spikes: np.ndarray) -> None:
@@ -238,7 +283,15 @@ class SelfConnectingPathway:
         sitting frozen at its init weight forever -- without it, mandatory
         pruning (Section 1) would have nothing to act on for an edge that
         simply never fires.
+
+        No-op entirely when cfg.enable_connection_stdp is False: connection
+        weights are then frozen at whatever they were constructed/grown
+        with, and no Δw history accumulates, so growth/prune naturally have
+        nothing to act on either -- the correct "topology and weights both
+        frozen" isolation arm.
         """
+        if not self.cfg.enable_connection_stdp:
+            return
         cfg = self.cfg
         for source_id in range(self.circuit.num_neurons):
             if not self.circuit.neuron_active[source_id]:

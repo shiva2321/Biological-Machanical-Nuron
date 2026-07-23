@@ -103,6 +103,60 @@ def test_capacity_cap_is_respected():
     print("PASS: pool cap respected (add_neuron returns None at capacity)\n")
 
 
+def test_extreme_lambda_edge_does_not_disable_growth_but_the_flag_does():
+    print("="*70)
+    print("TEST 3b: lambda_edge cannot disable growth at mu~0; enable_instability_growth=False can")
+    print("="*70)
+
+    # An exactly-zero-mean, nonzero-variance history. This makes the bug
+    # airtight rather than a matter of picking "big enough" numbers: when
+    # mu_k == 0.0 exactly, the flag condition's right-hand side
+    # (lambda_edge * |mu_k|) is 0 * lambda_edge = 0 for EVERY finite
+    # lambda_edge, so `sigma_k^2 > lambda_edge * |mu_k|` collapses to
+    # `sigma_k^2 > 0`, which is lambda_edge-independent by construction --
+    # not just true for the lambda_edge value this test happens to try.
+    exactly_zero_mean = [3.0, -3.0] * 10  # mean == 0.0 exactly, real variance
+
+    circuit = _make_circuit(num_neurons=3, input_channels=2, max_neurons=6)
+    conn = circuit.connect(0, 2, weight=1.0, delay=1)
+
+    huge_lambda_cfg = StructuralPlasticityConfig(window_T=20, lambda_edge=1e12)
+    pathway = SelfConnectingPathway(circuit, huge_lambda_cfg)
+    pathway._edge_history[conn.conn_id] = deque(exactly_zero_mean, maxlen=20)
+    mu, sigma = np.mean(exactly_zero_mean), np.std(exactly_zero_mean)
+    assert mu == 0.0 and sigma > 0.0
+    assert abs(mu) < 0.5 * sigma and sigma ** 2 > huge_lambda_cfg.lambda_edge * abs(mu), \
+        "lambda_edge=1e12 should still fail to block this history (that's the bug)"
+    grown = pathway._instability_growth()
+    assert len(grown) == 1, "confirms lambda_edge alone cannot disable growth at mu=0"
+
+    # Same history that just proved it triggers growth above -- but with the
+    # flag off instead of an extreme threshold. enable_connection_stdp is
+    # also disabled here so the seeded history isn't overwritten by real
+    # (decay-only, zero-spike) STDP updates during the step() loop below;
+    # that isolates exactly one variable: does enable_instability_growth
+    # block a history that would otherwise trigger growth? Note
+    # max_neurons == num_neurons is fine here (no ValueError), which is
+    # itself part of the fix: a growth-free arm shouldn't be forced to
+    # allocate pool room it will never use.
+    circuit2 = _make_circuit(num_neurons=3, input_channels=2, max_neurons=3)
+    conn2 = circuit2.connect(0, 2, weight=1.0, delay=1)
+    disabled_cfg = StructuralPlasticityConfig(window_T=20, prune_period_s=20,
+                                               enable_connection_stdp=False,
+                                               enable_instability_growth=False)
+    pathway2 = SelfConnectingPathway(circuit2, disabled_cfg)
+    pathway2._edge_history[conn2.conn_id] = deque(exactly_zero_mean, maxlen=20)
+
+    events = None
+    for _ in range(disabled_cfg.prune_period_s):
+        output_spikes = np.zeros(circuit2.num_neurons, dtype=bool)
+        events = pathway2.step(output_spikes)  # drives _step_count to a prune_period_s boundary
+
+    assert events['grown_relay'] == [], "enable_instability_growth=False must block growth through the public step() path"
+    assert circuit2.num_neurons == 3, "no relay neuron should have been added"
+    print("PASS: enable_instability_growth=False is the correct disable lever, not lambda_edge\n")
+
+
 def test_prune_removes_weak_stable_edges():
     print("="*70)
     print("TEST 4: mandatory pruning removes weak, stable edges")
@@ -227,6 +281,7 @@ if __name__ == "__main__":
     test_connection_stdp_updates_weight_and_history()
     test_instability_growth_inserts_relay()
     test_capacity_cap_is_respected()
+    test_extreme_lambda_edge_does_not_disable_growth_but_the_flag_does()
     test_prune_removes_weak_stable_edges()
     test_orphan_relay_removed_after_hop_pruned()
     test_synaptic_normalization_holds_afferent_sum()
