@@ -132,13 +132,26 @@ class StructuralPlasticityConfig:
     transfer even if we had them (see structure_pathway.py adaptation #1).
 
     lambda_edge, tau_w, and tau_delta below are NOT guesses: they're taken
-    from calibrate_structure_thresholds.py's p10/p90 measurements of this
-    module's actual STDP-driven Δw distribution (20-neuron circuit, 40
-    edges initialized at relay_init_scale, 4000 steps -- see that script
-    for the full method). Re-run it and update these if conn_a_plus/
-    conn_a_minus/relay_init_scale/circuit scale change materially, since
-    the numbers are only as good as how representative that run is of your
-    actual circuit.
+    from calibrate_structure_thresholds.py's measurements of this module's
+    actual STDP-driven Δw distribution (20-neuron circuit, 40 edges
+    initialized at relay_init_scale, 4000 steps -- see that script for the
+    full method). Re-run it and update these if conn_a_plus/conn_a_minus/
+    relay_init_scale/circuit scale change materially, since the numbers are
+    only as good as how representative that run is of your actual circuit.
+
+    tau_w and tau_delta are calibrated JOINTLY against growth's own
+    measured flag rate, not as independent marginal percentiles (e.g. "p10
+    of each"). This matters and was found the hard way: the prune rule
+    requires BOTH |w_k| <= tau_w AND |mu_k| <= tau_delta at once (an AND),
+    so picking each threshold as its own marginal p10 in isolation produces
+    a JOINT flag rate around p10 * p10 (~1%) -- roughly 7-10x weaker than
+    growth's own ~10% rate at the calibrated lambda_edge. With pruning
+    starved relative to growth like that, population size doesn't track
+    task difficulty; it just races to whatever max_neurons cap is
+    configured, on a fixed schedule, independent of whether growth is
+    still earning its keep. calibrate_structure_thresholds.py's
+    find_joint_prune_thresholds() searches for tau_w/tau_delta whose joint
+    (AND) flag rate matches growth's actual measured rate instead.
 
     To build an ablation-isolation arm (e.g. "STDP-only, no structural
     change" as a middle rung between a bare circuit and the full pathway),
@@ -154,9 +167,9 @@ class StructuralPlasticityConfig:
     = False instead.
     """
     window_T: int = 50          # steps of Δw history required before an edge is eligible for growth/prune checks
-    lambda_edge: float = 10.0   # instability flag: sigma_k^2 > lambda_edge * |mu_k|  (calibrated: p90 of sigma_k^2/|mu_k| ~= 10.5)
-    tau_w: float = 0.16         # prune candidate: |w_k| <= tau_w                    (calibrated: p10 of |weight| ~= 0.16)
-    tau_delta: float = 0.0002   # prune candidate: |mu_k| <= tau_delta               (calibrated: p10 of |mu_k| ~= 0.0002)
+    lambda_edge: float = 12.4   # instability flag: sigma_k^2 > lambda_edge * |mu_k|  (calibrated: p90 of sigma_k^2/|mu_k|; ~10% growth flag rate)
+    tau_w: float = 0.37         # prune candidate: |w_k| <= tau_w                    (joint-calibrated to match growth's ~10% flag rate)
+    tau_delta: float = 0.0008   # prune candidate: |mu_k| <= tau_delta               (joint-calibrated to match growth's ~10% flag rate)
     prune_period_s: int = 200   # structural-edit ("slow") clock, in circuit steps
     prune_fraction_eta: float = 0.3   # only prune this fraction of the flagged set per cycle
     p_rand: float = 0.05        # Bernoulli chance of a random-growth event per structural cycle
