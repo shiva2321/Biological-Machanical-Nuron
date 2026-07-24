@@ -414,13 +414,107 @@ spontaneity condition. The "neither learns, neither eats" result is
 robust across both runs; the finer-grained comparisons between them are
 suggestive, not proven.
 
+## Second follow-up round: a control, a prediction, and the cheapest fix
+
+Three more things checked -- one to verify a claim made above rather than
+just assert it, one to test whether a design parallel actually holds, and
+one to try the single cheapest, most standard fix available before
+concluding anything further.
+
+### 4. Zero-reward control: was the 0.205 weight really reward-driven?
+
+The claim above ("a small but genuine sign of reward-modulated
+reinforcement") was inference, not proof. Checked directly: reran the
+identical fixed-spontaneity(0.02) condition with a new `disable_reward`
+override that pins reward and pain to exactly 0.0 every cycle, making the
+weight-update line (`dw = LR * trace * reward`) a mathematical no-op for
+every synapse. Confirmed the chem field stays bit-exactly zero for 20,000
+cycles. Result: **max direct sensor->motor weight ever observed: 0.0000**
+-- no direct edge even formed in this run, let alone reached a weight
+above the 0.2 ceiling that random initial growth alone can produce. That
+confirms the claim: the 0.205 in the real run required reward-modulated
+plasticity to happen at all; it isn't an artifact of structural growth.
+
+Side effect worth flagging on its own: this run's distance-to-food
+*improved* (16.13 -> 13.69) with reward completely off. That's not
+learning -- there is no mechanism left that could produce it -- it's this
+single random-walk trajectory happening to end up nearer a food position
+that (since it's never eaten in this run) never moves from its seed=7
+starting location. This is a useful caution: "distance-to-food improved"
+is a noisy enough signal on a single trajectory that a true null
+condition can pass it by chance. `food_eaten` is the more trustworthy
+metric precisely because it can't be won by luck the same way -- and
+it's zero in every condition tested in this document, including this one.
+
+### 5. Does mp_beta erode under selection the way spontaneity did?
+
+The hypothesis: mp_beta (the Memory Protein / intrinsic-adaptation gene)
+is heritable and mutable exactly like spontaneity was, so individual
+energy selection should erode it the same way. Reran the
+evolvable-spontaneity condition (bit-reproducing the original run) with
+mp_beta/mp_gamma now tracked. Result: mean mp_beta went from -0.1257 to
+-0.1458 -- **more negative, i.e. more facilitating, the opposite
+direction** from what the spontaneity parallel predicted.
+
+Reading this honestly rather than declaring victory either way: the
+magnitude is small relative to mp_beta's allowed range ([-0.6, 0.3]), and
+this is one seed, so this could be ordinary genetic drift rather than
+selection pushing in a real direction -- unlike spontaneity's erosion,
+which was a clear, consistent ~19% relative move in one direction. A
+plausible mechanistic reason the two genes would diverge: `spontaneity`
+manufactures firing (and its `FIRE_COST`) out of nothing, a pure gamble
+that's individually expensive with a rare payoff; `mp_beta` only shapes
+how *already-arriving* input converts into a spike, so it doesn't create
+new costly events on its own the way spontaneity does, and has less
+reason to be punished the same way. Net effect on the plan: the specific
+empirical prediction wasn't confirmed, but the underlying point stands on
+different grounds -- if selection isn't clearly shaping mp_beta in either
+direction (as opposed to clearly eroding it), evolutionary search isn't
+reliably finding a good value for it either, which is itself an argument
+for the proper fix (a fixed regulatory *rule* every neuron runs, per
+Turrigiano, rather than a heritable *value* left to drift) over trusting
+mutation and selection to land somewhere useful.
+
+### 6. The cheapest fix: continuous potential-based reward shaping
+
+Implemented Ng, Harada & Russell (1999) properly: `reward = max(prev_dist
+- dist, 0) * GAIN`, `pain = max(dist - prev_dist, 0) * GAIN` -- moving
+away deposits into the pain channel instead of being silently discarded,
+so it's genuinely signed, not just a reward-only floor (an earlier draft
+of this fix clamped the negative case to zero, which is a different and
+weaker rule than what the shaping-invariance proof actually covers;
+caught and fixed before running, confirmed via a bit-identical-output
+regression check on the non-shaping code path). Tested on top of
+fixed-spontaneity(0.02) for a clean, one-variable comparison against the
+existing binary-shaping baseline:
+
+| condition | 1st half dist | 2nd half dist | change | food eaten | % live path |
+|---|---:|---:|---:|---:|---:|
+| B: binary shaping (baseline) | 27.87 | 37.43 | +9.55 | 0 | 30% |
+| C: continuous shaping | 18.66 | 21.73 | **+3.07** | 0 | **60%** |
+| D: no reward (null control) | 16.13 | 13.69 | -2.44 (noise, see above) | 0 | 45% |
+
+Continuous shaping is a real, measurable improvement over binary shaping
+on both axes that matter -- distance-to-food degrades roughly a third as
+much, and the fraction of checkpoints with a *live* path doubles to 60%,
+the highest of any condition tested in this document. Denser reward
+genuinely produces more live signal and less-bad drift. But it does not
+solve the underlying problem: distance still trends up, not down, and
+**food eaten is still exactly zero** -- across all four conditions in
+this table, and every 20,000-cycle run in this entire document. That
+last fact is the one result in this whole investigation that isn't
+sensitive to which single trajectory got lucky: no amount of noise
+tuning or reward-density tuning tried so far has produced one single
+successful food-reaching event.
+
 ## What this suggests
 
 - The reward-modulated (three-factor) plasticity piece is the strongest
   part of the original idea and it is implemented faithfully here --
   it just hasn't been given a chain short/easy enough to demonstrate it
   yet, and the ablation shows *more noise alone doesn't shorten that
-  chain*.
+  chain*. Denser reward (continuous shaping) helps on every measurable
+  axis except the one that actually matters (food eaten stays zero).
 - The structural growth piece reliably does *something* (a connectome
   forms, population responds to energy) but "something" is not the same
   as "something useful." The precise gap, now measured rather than
@@ -441,32 +535,55 @@ suggestive, not proven.
   measurably falls under individual selection) but turned out to be a
   secondary effect, not the bottleneck -- a good reminder that a
   mechanistically clean story can still be the wrong explanation until
-  you've actually removed the thing you think is causing it.
+  you've actually removed the thing you think is causing it. mp_beta,
+  the gene closest in spirit to a proper homeostatic mechanism, did not
+  show the same erosion, for a plausible structural reason (it doesn't
+  manufacture costly spikes from nothing the way spontaneity does).
+- Across every condition tested -- evolvable spontaneity, fixed
+  spontaneity, reward disabled, continuous shaping, two different seeds'
+  worth of runs -- **food eaten never once left zero.** Distance-to-food
+  trends are a noisy enough metric that a true null (zero-reward)
+  condition passed them by chance in one run; food-eaten is not, and it's
+  the cleanest single fact this whole document has produced.
 
 ## If continuing this sandbox
 
 In rough order of expected information gained per unit effort, updated
-after the follow-up checks above:
+after both rounds of follow-up checks:
 
-1. **Chase the liveness gap directly, not the noise floor** -- that's
-   now the best-supported bottleneck. Candidates worth isolating one at
-   a time: stronger initial synapse weights (currently 0.05-0.2, quite
-   weak relative to typical thresholds ~0.6-1.2), extra plasticity for
-   young/novel synapses, or a lower relay threshold specifically for
-   interior path neurons. The ablation already shows this isn't just
-   "add more noise" -- it needs to be noise (or bias) that specifically
-   increases the odds of an end-to-end firing chain, not just more
-   scattered individual spikes.
+1. **Chase the liveness gap directly -- it's the one lever that's moved
+   the needle so far.** Continuous shaping alone (a ~15-line change) cut
+   the distance-to-food degradation to a third of baseline and doubled
+   the live-path fraction to 60%, without fixing the underlying problem.
+   Next candidates, same spirit: stronger initial synapse weights
+   (currently 0.05-0.2, weak relative to thresholds ~0.6-1.2), extra
+   plasticity for young/novel synapses (the literal silent-synapse
+   unsilencing mechanism -- Isaac/Nicoll/Malenka 1995 -- rather than a
+   generic weight boost, since a generic boost would also inflate dead
+   ends that were never near reward), or Turrigiano-style per-neuron
+   homeostatic thresholding instead of leaving excitability to a
+   heritable gene under uncertain selection.
 2. Finish the vectorization pass (NumPy arrays over the population)
    before scaling further -- both to remove the remaining implementation
    confound from any future scaling claim, and because it would make
-   experiments like the spontaneity ablation (currently ~2 minutes per
-   20,000-cycle run at population 150) cheap enough to run across
-   multiple seeds instead of one, which the single-seed ablation above
-   genuinely needed.
+   experiments like these (currently ~1.5-2 minutes per 20,000-cycle run
+   at population 150) cheap enough to run across multiple seeds instead
+   of one, which every ablation in this document genuinely needed and
+   didn't get.
 3. Let `learning_wall_experiment.py` run substantially longer or with a
    larger population cap -- 20,000 cycles with 150 neurons and 3 sensors,
-   twice, is still a small sample of a large search space, especially
-   now that vectorization would make longer runs cheap.
+   several times now, is still a small sample of a large search space,
+   especially now that vectorization would make longer runs cheap.
 4. Only after 1-3: revisit the visual cortex / "Memory Protein" pieces
-   that were deliberately left out of this pass.
+   that were deliberately left out of this pass -- though point 5 below
+   is a cheap, standalone way to sanity-check the population's state
+   before investing more in relay mechanisms specifically.
+5. **A linear-readout decoding probe**, orthogonal to 1-4: freeze a
+   snapshot of population firing rates and fit a cheap linear/logistic
+   classifier from firing rates -> correct steering direction. If it
+   decodes well above chance, the sensory information is present in the
+   population and the bottleneck really is relay/credit-assignment
+   (consistent with everything above). If it doesn't decode at all, no
+   amount of relay-strengthening fixes anything -- the population isn't
+   representing the task yet, which would be a different and more
+   fundamental finding. Not yet built here.

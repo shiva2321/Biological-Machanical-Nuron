@@ -112,6 +112,7 @@ HAZARD_RADIUS = 2.0
 FOOD_REWARD = 3.0
 APPROACH_REWARD = 0.05
 HAZARD_PAIN = 2.0
+SHAPING_GAIN = 0.15  # continuous_shaping reward per voxel of distance closed
 
 
 def bucket_key(pos: np.ndarray) -> tuple[int, int, int]:
@@ -233,9 +234,22 @@ class Agent:
 class World:
     def __init__(self, grid: int = GRID, n_seed_interneurons: int = 40, seed: Optional[int] = None,
                  use_spatial_hash: bool = True, freeze_population: bool = False, max_pop: int = MAX_POP,
-                 fixed_spontaneity: Optional[float] = None):
+                 fixed_spontaneity: Optional[float] = None, disable_reward: bool = False,
+                 continuous_shaping: bool = False):
         self.grid = grid
         self.max_pop = max_pop
+        # Control: forces reward/pain to 0 everywhere, always, so the
+        # reward-modulated weight update is mathematically a no-op
+        # (dw = LR * trace * 0 = 0 for every synapse, every cycle). Used to
+        # test whether weight growth in a real run is actually reward-driven
+        # or an artifact of structural/Hebbian dynamics alone.
+        self.disable_reward = disable_reward
+        # Continuous potential-based shaping (Ng, Harada & Russell 1999),
+        # Phi(s) = -distance-to-food: reward each cycle is proportional to
+        # the actual reduction in distance (and negative when moving away),
+        # instead of the coarser fixed APPROACH_REWARD bonus for any
+        # improvement at all.
+        self.continuous_shaping = continuous_shaping
         # When set, every neuron's spontaneity is pinned to this value at
         # spawn and at mitosis, instead of being a heritable, individually
         # mutable/selectable gene. Isolates whether the "tragedy of the
@@ -470,7 +484,19 @@ class World:
 
         # 5. reward / pain from the world, deposited locally at the agent's new position
         dist = float(np.linalg.norm(self.agent.pos - self.food_pos))
-        reward = APPROACH_REWARD if dist < self.prev_dist else 0.0
+        pain = 0.0
+        if self.continuous_shaping:
+            # Genuinely signed potential-based shaping, Phi(s) = -distance:
+            # F(s,a,s') = Phi(s') - Phi(s) = prev_dist - dist. Moving closer
+            # deposits reward; moving away deposits into the pain channel
+            # proportionally, instead of being silently discarded -- a
+            # reward-only floor is a different (weaker, non-symmetric) rule
+            # than what Ng/Harada/Russell's invariance proof covers.
+            delta = self.prev_dist - dist
+            reward = max(delta, 0.0) * SHAPING_GAIN
+            pain = max(-delta, 0.0) * SHAPING_GAIN
+        else:
+            reward = APPROACH_REWARD if dist < self.prev_dist else 0.0
         if dist < FOOD_RADIUS:
             reward += FOOD_REWARD
             self.food_eaten += 1
@@ -478,12 +504,14 @@ class World:
             dist = float(np.linalg.norm(self.agent.pos - self.food_pos))
         self.prev_dist = dist
 
-        pain = 0.0
         if float(np.linalg.norm(self.agent.pos - self.hazard_pos)) < HAZARD_RADIUS:
             pain += HAZARD_PAIN
             self.hazard_hits += 1
             self.hazard_pos = self._random_point()
 
+        if self.disable_reward:
+            reward = 0.0
+            pain = 0.0
         self._deposit_chem(self.agent.pos, reward, pain)
 
         # 6. reward-modulated weight update, sampled locally at each synapse's target

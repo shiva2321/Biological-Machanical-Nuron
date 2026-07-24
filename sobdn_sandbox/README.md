@@ -43,6 +43,12 @@ See `FINDINGS.md` for what actually happened when this was run.
   constant -- a direct test of whether individual-level selection eroding
   population-level exploration is the actual bottleneck (see FINDINGS.md;
   short answer: no, it isn't).
+- `followup_checks.py` -- three more checks: a zero-reward control (was
+  weight growth really reward-driven, or a structural-growth artifact?),
+  whether the mp_beta gene erodes under selection the way spontaneity did,
+  and a properly-signed continuous potential-based reward-shaping
+  experiment (Ng, Harada & Russell 1999) against the existing binary
+  shaping rule. See FINDINGS.md for the results.
 - `outputs/` -- logs, plots, and profiler output from actual runs.
 
 ## Running it
@@ -53,6 +59,7 @@ python3 run_experiment.py          # baseline: free-growing population
 python3 scaling_test.py            # performance wall
 python3 learning_wall_experiment.py  # learning wall (population capped)
 python3 spontaneity_ablation.py    # does fixing exploration noise help?
+python3 followup_checks.py         # zero-reward control, mp_beta drift, reward shaping
 ```
 
 Each script prints periodic status lines, explicit pass/fail-style

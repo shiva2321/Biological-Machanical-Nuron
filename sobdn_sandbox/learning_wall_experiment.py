@@ -54,8 +54,10 @@ def direct_sensor_motor_weights(world: World):
 
 
 def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
-        fixed_spontaneity=None, label: str = "evolvable-spontaneity", verbose: bool = True):
-    world = World(seed=seed, n_seed_interneurons=40, max_pop=max_pop, fixed_spontaneity=fixed_spontaneity)
+        fixed_spontaneity=None, label: str = "evolvable-spontaneity", verbose: bool = True,
+        disable_reward: bool = False, continuous_shaping: bool = False):
+    world = World(seed=seed, n_seed_interneurons=40, max_pop=max_pop, fixed_spontaneity=fixed_spontaneity,
+                  disable_reward=disable_reward, continuous_shaping=continuous_shaping)
 
     if verbose:
         print("=" * 70)
@@ -84,6 +86,8 @@ def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
             mean_direct_w = float(np.mean(direct_w)) if direct_w else 0.0
             mean_spontaneity = float(np.mean([n.genome["spontaneity"] for n in world.neurons.values()]))
             mean_v_thresh = float(np.mean([n.genome["v_thresh"] for n in world.neurons.values()]))
+            mean_mp_beta = float(np.mean([n.genome["mp_beta"] for n in world.neurons.values()]))
+            mean_mp_gamma = float(np.mean([n.genome["mp_gamma"] for n in world.neurons.values()]))
             path = world.sensorimotor_path()
             path_hops = (len(path) - 1) if path is not None else -1
             liveness = world.path_liveness(path)
@@ -97,6 +101,8 @@ def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
             history["n_direct_edges"].append(len(direct_w))
             history["mean_spontaneity"].append(mean_spontaneity)
             history["mean_v_thresh"].append(mean_v_thresh)
+            history["mean_mp_beta"].append(mean_mp_beta)
+            history["mean_mp_gamma"].append(mean_mp_gamma)
             history["path_hops"].append(path_hops)
             history["path_liveness"].append(liveness)
 
@@ -135,6 +141,11 @@ def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
               f"last={history['mean_spontaneity'][-1]:.4f}")
         print(f"Mean v_thresh (genome):    first={history['mean_v_thresh'][0]:.3f} -> "
               f"last={history['mean_v_thresh'][-1]:.3f}")
+        print(f"Mean mp_beta (genome, intrinsic-plasticity direction): "
+              f"first={history['mean_mp_beta'][0]:+.4f} -> last={history['mean_mp_beta'][-1]:+.4f} "
+              f"(more negative = more facilitating/easier to keep firing)")
+        print(f"Mean mp_gamma (genome, adaptation decay): first={history['mean_mp_gamma'][0]:.4f} -> "
+              f"last={history['mean_mp_gamma'][-1]:.4f}")
         print(f"Fraction of logged cycles with ANY sensor->motor path:  {frac_path*100:.1f}%")
         print(f"Fraction of logged cycles with a LIVE sensor->motor path: {frac_live*100:.1f}%")
 
