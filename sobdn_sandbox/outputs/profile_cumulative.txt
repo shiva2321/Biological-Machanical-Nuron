@@ -1,0 +1,28 @@
+         16377972 function calls in 13.850 seconds
+
+   Ordered by: cumulative time
+   List reduced from 69 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       15    0.195    0.013   13.850    0.923 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:352(step)
+      880    1.255    0.001   12.627    0.014 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:487(_attempt_growth)
+   404041    0.466    0.000    5.704    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:290(_sample_chem)
+   416131    0.942    0.000    5.388    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:285(_voxel)
+      880    1.814    0.002    4.554    0.005 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:316(_nearby_neurons)
+   416236    0.542    0.000    4.067    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/fromnumeric.py:2207(clip)
+  1043330    1.978    0.000    3.814    0.000 /root/.local/lib/python3.11/site-packages/numpy/linalg/_linalg.py:2599(norm)
+   416236    0.269    0.000    3.525    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/fromnumeric.py:48(_wrapfunc)
+   416236    0.223    0.000    3.189    0.000 {method 'clip' of 'numpy.ndarray' objects}
+   416236    1.786    0.000    2.967    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/_methods.py:96(_clip)
+  1043330    0.978    0.000    0.978    0.000 {method 'dot' of 'numpy.ndarray' objects}
+   832262    0.912    0.000    0.912    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/getlimits.py:412(__init__)
+  1043330    0.282    0.000    0.379    0.000 /root/.local/lib/python3.11/site-packages/numpy/linalg/_linalg.py:168(isComplexType)
+   416131    0.289    0.000    0.289    0.000 {method 'astype' of 'numpy.ndarray' objects}
+  1422033    0.261    0.000    0.261    0.000 {method 'get' of 'dict' objects}
+  1043330    0.246    0.000    0.246    0.000 {method 'ravel' of 'numpy.ndarray' objects}
+  2089330    0.217    0.000    0.217    0.000 {built-in method builtins.issubclass}
+    12075    0.020    0.000    0.173    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:299(_consume_nutrient)
+  1043330    0.172    0.000    0.172    0.000 /root/.local/lib/python3.11/site-packages/numpy/linalg/_linalg.py:2595(_norm_dispatcher)
+   416131    0.159    0.000    0.159    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/getlimits.py:423(min)
+
+

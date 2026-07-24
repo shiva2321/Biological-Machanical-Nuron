@@ -62,6 +62,7 @@ biological name is attached to it.
 from __future__ import annotations
 
 import itertools
+import math
 import random
 import time
 from collections import defaultdict, deque
@@ -115,6 +116,17 @@ HAZARD_PAIN = 2.0
 
 def bucket_key(pos: np.ndarray) -> tuple[int, int, int]:
     return (int(pos[0] // BUCKET_SIZE), int(pos[1] // BUCKET_SIZE), int(pos[2] // BUCKET_SIZE))
+
+
+def _dist(a: np.ndarray, b: np.ndarray) -> float:
+    """Euclidean distance without numpy's generic-ufunc dispatch overhead --
+    profiling (outputs/profile_cumulative.txt) showed np.linalg.norm costing
+    ~3.8s of a 13.9s / 15-cycle window at population 800, almost entirely
+    dispatch overhead for 3-element vectors, not the arithmetic itself."""
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    dz = a[2] - b[2]
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
 # ---------------------------------------------------------------------------
@@ -220,9 +232,17 @@ class Agent:
 # ---------------------------------------------------------------------------
 class World:
     def __init__(self, grid: int = GRID, n_seed_interneurons: int = 40, seed: Optional[int] = None,
-                 use_spatial_hash: bool = True, freeze_population: bool = False, max_pop: int = MAX_POP):
+                 use_spatial_hash: bool = True, freeze_population: bool = False, max_pop: int = MAX_POP,
+                 fixed_spontaneity: Optional[float] = None):
         self.grid = grid
         self.max_pop = max_pop
+        # When set, every neuron's spontaneity is pinned to this value at
+        # spawn and at mitosis, instead of being a heritable, individually
+        # mutable/selectable gene. Isolates whether the "tragedy of the
+        # commons" dynamic found in FINDINGS.md (individual energy
+        # selection eroding the population-level exploration rate) is
+        # actually the blocker, independent of any other change.
+        self.fixed_spontaneity = fixed_spontaneity
         self.rng = random.Random(seed)
         np_seed = None if seed is None else seed
         self._np_rng = np.random.default_rng(np_seed)
@@ -274,6 +294,8 @@ class World:
 
     # -- bookkeeping -------------------------------------------------
     def _spawn(self, pos, kind, genome, energy: float = 5.0) -> Neuron:
+        if self.fixed_spontaneity is not None:
+            genome["spontaneity"] = self.fixed_spontaneity
         nid = next(self._id_counter)
         n = Neuron(id=nid, pos=np.array(pos, dtype=float), kind=kind, genome=genome, energy=energy)
         self.neurons[nid] = n
@@ -283,8 +305,21 @@ class World:
         return self._np_rng.uniform(4, self.grid - 4, 3)
 
     def _voxel(self, pos: np.ndarray) -> tuple[int, int, int]:
-        c = np.clip(pos.astype(int), 0, self.grid - 1)
-        return int(c[0]), int(c[1]), int(c[2])
+        # Pure-Python clip/truncate -- called ~27k times/cycle at population
+        # 800 (via _sample_chem/_consume_nutrient/_deposit_chem), and numpy's
+        # generic dispatch made this the single largest cost in the engine
+        # (see outputs/profile_cumulative.txt). int() truncates toward zero,
+        # same as ndarray.astype(int), so this is behaviorally identical to
+        # the numpy version it replaces.
+        grid_max = self.grid - 1
+        x, y, z = int(pos[0]), int(pos[1]), int(pos[2])
+        if x < 0: x = 0
+        elif x > grid_max: x = grid_max
+        if y < 0: y = 0
+        elif y > grid_max: y = grid_max
+        if z < 0: z = 0
+        elif z > grid_max: z = grid_max
+        return x, y, z
 
     # -- chemical / nutrient field ------------------------------------
     def _sample_chem(self, pos):
@@ -313,9 +348,19 @@ class World:
         for nid, n in self.neurons.items():
             self._hash[bucket_key(n.pos)].append(nid)
 
-    def _nearby_neurons(self, pos: np.ndarray, radius: float) -> list[Neuron]:
+    def _nearby_neurons(self, pos: np.ndarray, radius: float) -> list[tuple[Neuron, float]]:
+        """Returns (neuron, distance) pairs -- the caller (_attempt_growth)
+        needs the exact distance anyway for scoring, so computing it once
+        here instead of once here-for-filtering and again in the caller
+        halves the number of distance calls in the hottest loop in the
+        engine (see outputs/profile_cumulative.txt)."""
         if not self.use_spatial_hash:
-            return [n for n in self.neurons.values() if np.linalg.norm(n.pos - pos) <= radius]
+            out = []
+            for n in self.neurons.values():
+                d = _dist(n.pos, pos)
+                if d <= radius:
+                    out.append((n, d))
+            return out
         bx, by, bz = bucket_key(pos)
         r = int(np.ceil(radius / BUCKET_SIZE)) + 1
         out = []
@@ -324,29 +369,60 @@ class World:
                 for dz in range(-r, r + 1):
                     for nid in self._hash.get((bx + dx, by + dy, bz + dz), ()):
                         n = self.neurons.get(nid)
-                        if n is not None and np.linalg.norm(n.pos - pos) <= radius:
-                            out.append(n)
+                        if n is not None:
+                            d = _dist(n.pos, pos)
+                            if d <= radius:
+                                out.append((n, d))
         return out
 
     # -- connectivity introspection ---------------------------------
-    def sensorimotor_path(self, weight_thresh: float = 0.05) -> Optional[int]:
+    def sensorimotor_path(self, weight_thresh: float = 0.05) -> Optional[list]:
         """BFS from sensors to motors over synapses with weight >= threshold.
-        Returns path length in hops if a bridge exists, else None."""
+        Returns the path as a list of neuron ids [sensor, ..., motor] if a
+        bridge exists, else None. IMPORTANT: this only proves the growth
+        process wired something up -- topological existence says nothing
+        about whether a spike ever actually crosses it. Given sensors and
+        motors are both body-anchored close together here (unlike the
+        original design's fixed X=0/X=29 layout), a short path is
+        geometrically cheap to form and is not by itself evidence the
+        mechanism is doing anything useful -- pair with path_liveness()."""
         motor_set = set(self.motor_ids.values())
-        visited = {sid: 0 for sid in self.sensor_ids}
+        pred: dict[int, Optional[int]] = {sid: None for sid in self.sensor_ids}
         q = deque(self.sensor_ids)
         while q:
             cur = q.popleft()
             if cur in motor_set:
-                return visited[cur]
+                path = [cur]
+                while pred[path[-1]] is not None:
+                    path.append(pred[path[-1]])
+                path.reverse()
+                return path
             n = self.neurons.get(cur)
             if n is None:
                 continue
             for tid, w in n.synapses.items():
-                if w >= weight_thresh and tid not in visited and tid in self.neurons:
-                    visited[tid] = visited[cur] + 1
+                if w >= weight_thresh and tid not in pred and tid in self.neurons:
+                    pred[tid] = cur
                     q.append(tid)
         return None
+
+    def path_liveness(self, path: Optional[list]) -> float:
+        """Mean EMA firing rate of the interior (non-sensor, non-motor)
+        neurons on a path from sensorimotor_path(). Near zero means the
+        path is topologically present but nothing is actually relaying a
+        signal through it. For a direct 1-hop path (no interior neurons),
+        falls back to that single synapse's eligibility trace instead,
+        since 'rate' isn't defined on an edge."""
+        if not path or len(path) < 2:
+            return 0.0
+        interior = path[1:-1]
+        if interior:
+            rates = [self.neurons[nid].rate for nid in interior if nid in self.neurons]
+            return float(np.mean(rates)) if rates else 0.0
+        src = self.neurons.get(path[0])
+        if src is None:
+            return 0.0
+        return float(src.elig.get(path[1], 0.0))
 
     # -- main loop ----------------------------------------------------
     def step(self) -> dict:
@@ -480,24 +556,26 @@ class World:
     def _mitosis(self, parent: Neuron) -> Neuron:
         parent.energy /= 2.0
         child_genome = mutate_genome(parent.genome, self.rng)
+        if self.fixed_spontaneity is not None:
+            child_genome["spontaneity"] = self.fixed_spontaneity
         child_pos = np.clip(parent.pos + self._np_rng.normal(0, 0.75, 3), 0, self.grid - 1)
         return Neuron(id=next(self._id_counter), pos=child_pos, kind="inter",
                       genome=child_genome, energy=parent.energy)
 
     def _attempt_growth(self, n: Neuron) -> None:
         radius = n.genome["growth_radius"]
-        candidates = [c for c in self._nearby_neurons(n.pos, radius) if c.id != n.id and c.id not in n.synapses]
+        candidates = [(c, d) for c, d in self._nearby_neurons(n.pos, radius)
+                      if c.id != n.id and c.id not in n.synapses]
         if not candidates:
             return
         scores = []
-        for c in candidates:
+        for c, d in candidates:
             r, p = self._sample_chem(c.pos)
-            d = float(np.linalg.norm(c.pos - n.pos)) + 1e-6
-            scores.append(max(r - p, 0.01) / d)
+            scores.append(max(r - p, 0.01) / (d + 1e-6))
         scores_arr = np.array(scores)
         probs = scores_arr / scores_arr.sum()
         choice = self._np_rng.choice(len(candidates), p=probs)
-        target = candidates[choice]
+        target = candidates[choice][0]
         n.synapses[target.id] = self.rng.uniform(0.05, 0.2)
         n.elig[target.id] = 0.0
         n.energy -= GROWTH_COST

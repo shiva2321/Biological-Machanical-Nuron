@@ -1,0 +1,23 @@
+         4841297 function calls in 3.726 seconds
+
+   Ordered by: cumulative time
+   List reduced from 67 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       15    0.169    0.011    3.726    0.248 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:389(step)
+      880    0.383    0.000    3.315    0.004 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:524(_attempt_growth)
+      880    0.783    0.001    2.004    0.002 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:341(_nearby_neurons)
+   693223    0.974    0.000    1.040    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:121(_dist)
+   404041    0.361    0.000    0.769    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:315(_sample_chem)
+   416131    0.419    0.000    0.419    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:297(_voxel)
+  1422033    0.174    0.000    0.174    0.000 {method 'get' of 'dict' objects}
+      880    0.133    0.000    0.133    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:526(<listcomp>)
+   693223    0.065    0.000    0.065    0.000 {built-in method math.sqrt}
+   349987    0.063    0.000    0.063    0.000 {built-in method builtins.max}
+   715398    0.059    0.000    0.059    0.000 {method 'append' of 'list' objects}
+    12075    0.015    0.000    0.029    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:324(_consume_nutrient)
+       15    0.009    0.001    0.022    0.001 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:336(_rebuild_spatial_hash)
+       90    0.020    0.000    0.021    0.000 /root/.local/lib/python3.11/site-packages/numpy/_core/numeric.py:1230(roll)
+    12075    0.017    0.000    0.020    0.000 /home/user/Biological-Machanical-Nuron/sobdn_sandbox/engine.py:190(update)
+
+

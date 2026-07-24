@@ -9,26 +9,40 @@ scripts, three separate questions. Numbers below are from real runs
 
 The idea is buildable and the mechanism is genuinely alive -- neurons
 grow, wire, spike, move a body, and reward-modulated plasticity is
-mathematically doing something. But it hits two real walls fast:
+mathematically doing something. It hits real walls, but a review pass
+(see "Follow-up" below) found that one of them was partly this
+implementation rather than the mechanism, and traced a second one to a
+more specific cause than originally stated:
 
-1. **A performance wall.** Pure-Python/NumPy, per-neuron-per-synapse
-   simulation becomes impractical (<20 cycles/s) somewhere around a few
-   hundred neurons, not the "10,000 neurons" the original design chat
-   guessed at -- an order of magnitude earlier than predicted.
+1. **A performance wall -- real, but ~1.8x-4x of it was implementation
+   overhead, not the mechanism.** The <20 cycles/s ceiling originally
+   measured around 200 neurons was genuinely there, but profiling found
+   most of the cost was numpy dispatch overhead on tiny per-candidate
+   operations, not the neighbor-search algorithm itself (spatial hash
+   vs. naive O(N^2) made almost no difference, which was the tell). Two
+   small, behavior-preserving fixes pushed the wall out by 1.8x-4x+
+   depending on scale. "200-400 neurons is where the idea breaks down"
+   is no longer a claim the numbers support -- see point 2 below in the
+   Follow-up section.
 2. **A carrying-capacity wall.** The nutrient-based population control
    doesn't actually cap population at this grid size/regen rate within
    thousands of cycles -- it grows roughly exponentially, which is also
-   what drives wall #1.
-
-And one clean negative result:
-
-3. **Undirected structural growth reliably builds a *connected* graph,
-   but not reliably a *functional* one.** Over a full 20,000-cycle run
-   with population deliberately held stable at 150, distance-to-food got
-   48% *worse* from the first half of the run to the second half, and
-   zero food was ever eaten. Whether that's "needs more scale" or "needs
-   a fundamentally different growth rule" is still open -- see below --
-   but at the scale actually tested, the answer is no, it doesn't learn.
+   what drove the original performance measurements.
+3. **Connectivity forms almost immediately; liveness essentially never
+   does.** A sensor->motor path exists at 100% of logged checkpoints in
+   every run tested, often within the first few hundred cycles -- but
+   it carries a real, live signal at only ~30-40% of checkpoints, most
+   of those barely above the detection threshold, and this pattern
+   holds whether or not exploration noise is artificially kept high
+   (see point 3 in Follow-up). This, not population size, looks like
+   the actual bottleneck.
+4. **Net result: it doesn't learn, at the scale actually tested.** Over
+   a full 20,000-cycle run with population held stable at 150,
+   distance-to-food got worse (not just flat) from the first half of the
+   run to the second, and zero food was ever eaten -- reproduced twice,
+   with and without heritable exploration noise. Whether that's "needs
+   more scale" or "needs a fundamentally different growth rule" is still
+   open, but "needs more noise" has now been tested and ruled out.
 
 ## Two bugs found by running the code, not by reading it
 
@@ -88,22 +102,30 @@ of population size.
 
 ## Wall: population does not reach homeostasis
 
-`run_experiment.py`, uncapped population, seed=1:
+`run_experiment.py`, uncapped population, seed=1 (numbers below are from
+the post-optimization engine -- see Follow-up point 2 -- so step times
+are ~3x faster than they were when this was first measured; the
+population/edges/energy/distance trajectory itself is bit-identical
+either way):
 
-| cycle | population | edges | mean energy | dist-to-food | step time |
-|------:|-----------:|------:|------------:|-------------:|----------:|
-| 500   | 43         | 233   | 11.0        | 20.8          | 4.5 ms |
-| 1000  | 104        | 552   | 12.8        | 26.8          | 13.7 ms |
-| 1500  | 220        | 1170  | 12.8        | 28.6          | 19.2 ms |
-| 2000  | 445        | 2301  | 11.7        | 27.6          | 43.1 ms |
-| 2500  | 786        | 3984  | 10.9        | 37.0          | 101.5 ms |
-| 3000  | 1283       | 6303  | 10.5        | 36.5          | 142.7 ms |
-| 3500  | 1899       | 9486  | 10.2        | 36.2          | 257.8 ms |
-| 4000  | 2696       | 13411 | 9.9         | 33.2          | 585.8 ms |
+| cycle | population | edges | mean energy | dist-to-food | path (hops, live) | step time |
+|------:|-----------:|------:|------------:|-------------:|:------------------:|----------:|
+| 500   | 43         | 233   | 11.0        | 20.8          | 1, 0.000 | 2.5 ms |
+| 1000  | 104        | 552   | 12.8        | 26.8          | 1, 0.000 | 8.4 ms |
+| 1500  | 220        | 1170  | 12.8        | 28.6          | 1, 0.000 | 6.4 ms |
+| 2000  | 445        | 2301  | 11.7        | 27.6          | 1, 0.000 | 15.6 ms |
+| 2500  | 786        | 3984  | 10.9        | 37.0          | 1, 0.000 | 31.7 ms |
+| 3000  | 1283       | 6303  | 10.5        | 36.5          | 1, 0.000 | 50.4 ms |
+| 3500  | 1899       | 9486  | 10.2        | 36.2          | 1, 0.000 | 87.1 ms |
+| 4000  | 2696       | 13411 | 9.9         | 33.2          | 1, 0.000 | 186.0 ms |
 
-(Run manually stopped after cycle 4000 -- population and per-cycle cost
-were still compounding with no sign of leveling off, and the trend was
-already unambiguous; see `outputs/baseline_run.log`.)
+This run now completes cleanly (it originally had to be stopped early --
+see Follow-up point 2 for why). The direct sensor->motor edge this run
+keeps finding is present and unchanging at 1 hop from cycle 500 onward,
+and its liveness reads exactly **0.000 at every single one of the 8
+checkpoints** -- the starkest version of the "sprawling, not reaching"
+pattern in this whole document: population grew 63x, edges grew 58x,
+and the one connection that would matter never once fired end-to-end.
 
 Population growth is compounding (~1.5-2x every 500 cycles) with no sign
 of leveling off before the run became impractically slow to continue.
@@ -236,39 +258,215 @@ problem rather than a fundamental impossibility -- but "plausibly fixable
 with more scale" is exactly the kind of claim this sandbox exists to
 pressure-test rather than assert.
 
+## Follow-up: three things worth checking rather than trusting
+
+A review of this document caught three real gaps -- one plot that hadn't
+been verified against what it actually measures, one conclusion drawn
+from a benchmark without profiling it first, and one mechanism-level
+hypothesis (the spontaneity tragedy-of-the-commons) that was diagnosed
+but never actually tested by removing it. All three were checked, not
+just discussed.
+
+### 1. The hop-count metric was real BFS, but not diagnostic on its own
+
+The concern: a "sensor->motor hops" panel pinned at exactly 1.00 for
+every logged cycle looked like it might be measuring something trivial
+(e.g. "length of a single synapse," which actually would be 1 by
+definition) rather than a real path check.
+
+Checked: `sensorimotor_path()` is a genuine BFS from the sensor set to
+the motor set, not a tautology -- confirmed by reading it and by the
+capped run below, where it reports 2 hops, not 1. But the underlying
+instinct was right for a different reason than expected: in *this*
+rewrite, sensors and motors are body-anchored close together (a few
+units apart, moving together with the agent), unlike the original
+design's fixed sensors-at-X=0/motors-at-X=29 layout. That makes a 1-hop
+path geometrically cheap to form almost by chance, independent of
+whether the mechanism is doing anything intelligent -- so hop-count
+alone was never going to be very diagnostic here, correct concern, just
+not the "trivial by definition" mechanism suspected.
+
+The actual gap: liveness (does the path carry a real signal) was
+checked by hand once during debugging (0% fire rate on relay neurons)
+but was never tracked over time or checked at all in the capped
+(`learning_wall_experiment.py`) run -- the FINDINGS text above says
+"only indirect multi-hop paths" for that run without ever having
+verified it. Fixed: `sensorimotor_path()` now returns the actual path,
+and a new `path_liveness()` reports the mean firing rate of the
+interior relay neurons (or the eligibility trace, for a direct edge).
+
+Rerunning the full 20,000-cycle capped experiment with this tracked
+(`outputs/spontaneity_ablation.log`, run A): a 2-hop path is present at
+**every single one of the 40 logged checkpoints** -- confirming the
+"cheap to form geometrically" read -- and liveness is 0.000 at all but
+a handful of them (two small blips of 0.002-0.003 around cycles
+12,500-15,000, and one flicker of 0.162 at the very last checkpoint).
+Overall, 40% of logged checkpoints cross a >0.01 liveness threshold at
+all, but essentially none of that shows up as improved food-seeking (see
+point 3). So the precise version of the original finding is: a path
+forms almost immediately and persists throughout, it flickers live more
+often than a single spot-check would suggest, but that intermittent
+liveness isn't translating into anything the reward signal can lock
+onto. "Sprawling, not reaching" was the right call, with "sometimes
+twitching" added as a real nuance the single fire-rate spot-check had
+missed.
+
+### 2. The spatial hash really doesn't help here -- and it isn't neighbor search that's slow
+
+The concern: hashed and naive O(N^2) neighbor search overlapping almost
+exactly in `scaling_test.png` suggests the ~200-400 neuron performance
+wall might belong to this implementation, not the underlying mechanism
+-- worth profiling before treating the scaling numbers as a verdict on
+the idea itself.
+
+Checked, with `cProfile` at population 800 (`outputs/profile_cumulative.txt`):
+confirmed directly. The full-grid chemical diffusion step (the other
+plausible fixed-cost suspect) doesn't even appear in the top 15 by
+cumulative time. What dominates is `_attempt_growth`'s candidate-scoring
+loop: 91% of total per-cycle time, and within it, the two largest
+individual costs were `_voxel()`'s `np.clip` on a 3-element array
+(called ~27,700 times/cycle, 5.4s of the 13.9s profiled window) and
+`np.linalg.norm` on 3-element vectors (~69,600 calls/cycle, 3.8s),
+computed twice per candidate -- once to filter it in `_nearby_neurons`,
+again to score it in `_attempt_growth`. Neither cost is inherent
+arithmetic; both are numpy's generic-dispatch overhead applied to
+operations tiny enough that plain Python is faster.
+
+Fixed both (pure-Python clip/truncate in `_voxel`; a `math.sqrt`-based
+`_dist()` helper; `_nearby_neurons` now returns `(neuron, distance)`
+pairs so the distance is computed once, not twice) and reconfirmed
+**bit-identical simulation output** on a 300-cycle deterministic replay
+before trusting the numbers. Result, same population sizes as the
+original scaling test:
+
+| population | before | after | speedup |
+|-----------:|-------:|------:|--------:|
+| 55         | 8.6 ms   | 4.8 ms   | 1.8x |
+| 205        | 55.4 ms  | 18.7 ms  | 3.0x |
+| 805        | 464.4 ms | 138.1 ms | 3.4x |
+| 1605       | 1947.0 ms| 477.8 ms | 4.1x |
+
+So: **the wall was real, but a meaningful chunk of it -- and a growing
+share as population increases -- was this implementation, not the
+mechanism.** Two small, behavior-preserving fixes bought 1.8x-4x+,
+pushing the usability threshold (20 cycles/s) from ~200 neurons to
+somewhere between 200-800. Re-profiling after the fix shows the new
+dominant cost is the raw number of Python-level candidate evaluations
+per growth attempt (still ~46,000/cycle at population 800) -- which is
+a real cost of this benchmark's dense-cluster seeding combined with a
+dict-of-Python-objects architecture, not evidence about the SOBDN
+mechanism's intrinsic compute demand. That distinction still hasn't
+fully resolved -- it would take the vectorization pass already listed
+below to find out where the wall sits once the implementation stops
+being the bottleneck -- but "200-400 neurons is where the *idea* breaks
+down" is no longer a claim these numbers support.
+
+### 3. The spontaneity ablation: does removing the tragedy-of-the-commons actually help?
+
+The proposal: if individual-level energy selection eroding
+population-level spontaneity is really what's smothering exploration,
+pinning `spontaneity` to a fixed constant (heritable no longer, immune
+to selection) should let the capped 20,000-cycle test learn where the
+original didn't. If it still doesn't learn, the blocker is deeper --
+most likely the missing live bridge from point 1 above.
+
+Added `fixed_spontaneity` as a `World` constructor override (applied at
+spawn and at mitosis, bypassing mutation), and reran the identical
+seed=7, population-150, 20,000-cycle experiment with it pinned at 0.02
+(comfortably above the ~0.011 the original run's selection converged
+to). Both conditions logged with the same path-liveness tracking from
+point 1, for a direct comparison.
+
+Completed, same seed=7 for both:
+
+| metric                          | A: evolvable | B: fixed at 0.02 |
+|----------------------------------|--------------:|------------------:|
+| dist-to-food, first half         | 20.85         | 27.87             |
+| dist-to-food, second half        | 30.90         | 37.43             |
+| change (negative = improved)     | +10.04        | +9.55             |
+| total food eaten                 | 0             | 0                 |
+| % logged cycles with ANY path    | 100.0%        | 100.0%            |
+| % logged cycles with LIVE path   | 40.0%         | 30.0%             |
+
+**Verdict: fixing spontaneity did not rescue learning.** Both
+conditions get worse by essentially the same amount (+10.04 vs +9.55),
+neither ever eats food, and the fixed-spontaneity run's live-path
+fraction is if anything slightly *lower* (30% vs 40%) despite constant
+exploration noise. One real difference did show up: run B is the only
+one of the two that ever grew a direct (1-hop) sensor->motor synapse at
+all -- it appears at cycle 12,500 and its weight climbs from the
+default ~0.05-0.2 spawn range to 0.205 by the end, a small but genuine
+sign of reward-modulated reinforcement happening on *some* edge. It
+just never turns into eaten food or a shrinking distance-to-food trend.
+
+So: the tragedy-of-the-commons dynamic is real (spontaneity does drift
+down under individual selection, as documented above), but it is not
+*the* bottleneck -- removing it doesn't unlock learning. That leaves the
+missing live bridge (point 1) as the better-supported explanation:
+guaranteed exploration noise gives you more scattered activity, not a
+more reliable path from sensors to motors, and reward-modulated Hebbian
+plasticity has nothing to reinforce when the path that would matter
+almost never fires end-to-end. One caveat worth being honest about:
+this is a single seed per condition, not a multi-seed statistical
+comparison -- the 40% vs 30% live-path gap and the "which one is worse"
+comparison could partly be seed noise rather than a real effect of the
+spontaneity condition. The "neither learns, neither eats" result is
+robust across both runs; the finer-grained comparisons between them are
+suggestive, not proven.
+
 ## What this suggests
 
 - The reward-modulated (three-factor) plasticity piece is the strongest
   part of the original idea and it is implemented faithfully here --
   it just hasn't been given a chain short/easy enough to demonstrate it
-  yet.
+  yet, and the ablation shows *more noise alone doesn't shorten that
+  chain*.
 - The structural growth piece reliably does *something* (a connectome
   forms, population responds to energy) but "something" is not the same
-  as "something useful," and nothing in the mechanism as designed
-  closes that gap on its own.
-- The performance ceiling is real and arrives early. Any next step that
-  wants more population or more cycles needs vectorization (NumPy arrays
-  over the whole population instead of a Python dict of objects) before
-  it needs more biological features -- the same jump this repo's own
-  `neuron.py` already made once, from a NumPy prototype to a
-  GPU-accelerated one.
+  as "something useful." The precise gap, now measured rather than
+  inferred: paths form almost immediately (100% of checkpoints, every
+  run) and are live only ~30-40% of the time, mostly barely above
+  threshold -- growth solves "wire something up," not "wire up
+  something that fires."
+- The performance ceiling is real but was partly an artifact of this
+  implementation, not the mechanism -- a lesson in itself: don't trust a
+  scaling number as a verdict on an idea until you've profiled it.
+  Vectorizing the rest of the way (NumPy arrays over the whole
+  population instead of a Python dict of objects) is still the right
+  next move before scaling population further, and would also settle
+  the still-open question of where the wall sits once implementation
+  stops being the confound -- the same jump this repo's own `neuron.py`
+  already made once, from a NumPy prototype to a GPU-accelerated one.
+- The tragedy-of-the-commons genome-drift finding was real (spontaneity
+  measurably falls under individual selection) but turned out to be a
+  secondary effect, not the bottleneck -- a good reminder that a
+  mechanistically clean story can still be the wrong explanation until
+  you've actually removed the thing you think is causing it.
 
 ## If continuing this sandbox
 
-In rough order of expected information gained per unit effort:
+In rough order of expected information gained per unit effort, updated
+after the follow-up checks above:
 
-1. Let `learning_wall_experiment.py` run substantially longer (or with a
-   larger population cap) before concluding the credit-assignment chain
-   can't close -- 20,000 cycles with 150 neurons and 3 sensors is still a
-   small sample of a large search space.
-2. Add a small directed-exploration bias (e.g. higher initial synapse
-   weight, or extra plasticity for young synapses) and see whether that
-   alone is enough to bridge the gap -- this isolates "needs help
-   bootstrapping" from "needs a different mechanism entirely."
-3. Vectorize the neuron population into NumPy arrays (state per neuron
-   as array columns, synapses as a sparse adjacency structure) before
-   scaling population further -- the current dict-of-objects design is
-   the direct cause of the performance wall, independent of any
-   biological question.
+1. **Chase the liveness gap directly, not the noise floor** -- that's
+   now the best-supported bottleneck. Candidates worth isolating one at
+   a time: stronger initial synapse weights (currently 0.05-0.2, quite
+   weak relative to typical thresholds ~0.6-1.2), extra plasticity for
+   young/novel synapses, or a lower relay threshold specifically for
+   interior path neurons. The ablation already shows this isn't just
+   "add more noise" -- it needs to be noise (or bias) that specifically
+   increases the odds of an end-to-end firing chain, not just more
+   scattered individual spikes.
+2. Finish the vectorization pass (NumPy arrays over the population)
+   before scaling further -- both to remove the remaining implementation
+   confound from any future scaling claim, and because it would make
+   experiments like the spontaneity ablation (currently ~2 minutes per
+   20,000-cycle run at population 150) cheap enough to run across
+   multiple seeds instead of one, which the single-seed ablation above
+   genuinely needed.
+3. Let `learning_wall_experiment.py` run substantially longer or with a
+   larger population cap -- 20,000 cycles with 150 neurons and 3 sensors,
+   twice, is still a small sample of a large search space, especially
+   now that vectorization would make longer runs cheap.
 4. Only after 1-3: revisit the visual cortex / "Memory Protein" pieces
    that were deliberately left out of this pass.

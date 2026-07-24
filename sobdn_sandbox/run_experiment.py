@@ -42,7 +42,7 @@ def run(n_cycles: int = N_CYCLES, seed: int = SEED, verbose: bool = True):
     history = {
         "cycle": [], "population": [], "n_interneurons": [], "mean_energy": [],
         "n_edges": [], "dist_to_food": [], "food_eaten": [], "hazard_hits": [],
-        "step_time_s": [], "path_len": [],
+        "step_time_s": [], "path_len": [], "path_liveness": [],
     }
 
     if verbose:
@@ -58,7 +58,9 @@ def run(n_cycles: int = N_CYCLES, seed: int = SEED, verbose: bool = True):
         stats = world.step()
 
         if i % LOG_EVERY == 0 or i == n_cycles:
-            path_len = world.sensorimotor_path()
+            path = world.sensorimotor_path()
+            path_hops = (len(path) - 1) if path is not None else -1
+            liveness = world.path_liveness(path)
             history["cycle"].append(stats["cycle"])
             history["population"].append(stats["population"])
             history["n_interneurons"].append(stats["n_interneurons"])
@@ -68,12 +70,13 @@ def run(n_cycles: int = N_CYCLES, seed: int = SEED, verbose: bool = True):
             history["food_eaten"].append(stats["food_eaten"])
             history["hazard_hits"].append(stats["hazard_hits"])
             history["step_time_s"].append(stats["step_time_s"])
-            history["path_len"].append(path_len if path_len is not None else -1)
+            history["path_len"].append(path_hops)
+            history["path_liveness"].append(liveness)
 
             if verbose and (i % (LOG_EVERY * 10) == 0 or i == n_cycles):
                 print(f"cycle {i:6d} | pop={stats['population']:5d} (inter={stats['n_interneurons']:5d}) "
                       f"| mean_E={stats['mean_energy']:6.2f} | edges={stats['n_edges']:6d} "
-                      f"| path={path_len} | dist_food={stats['dist_to_food']:6.2f} "
+                      f"| path_hops={path_hops} live={liveness:.3f} | dist_food={stats['dist_to_food']:6.2f} "
                       f"| eaten={stats['food_eaten']:3d} | hazard_hits={stats['hazard_hits']:3d} "
                       f"| step_ms={stats['step_time_s']*1000:.2f}")
 
@@ -143,11 +146,15 @@ def plot(history: dict, out_dir: str = "outputs"):
     ax = axes[1, 0]
     path = np.array(history["path_len"], dtype=float)
     path[path < 0] = np.nan
+    liveness = np.array(history["path_liveness"])
     ax.plot(history["cycle"], history["n_edges"], color="seagreen", label="synapse count")
     ax2 = ax.twinx()
-    ax2.scatter(history["cycle"], path, color="crimson", s=8, label="sensor->motor hops")
-    ax.set_xlabel("cycle"); ax.set_ylabel("synapses", color="seagreen"); ax2.set_ylabel("hops", color="crimson")
-    ax.set_title("Connectome growth"); ax.grid(alpha=0.3)
+    vmax = max(float(np.nanmax(liveness)) if liveness.size else 0.0, 0.05)
+    sc = ax2.scatter(history["cycle"], path, c=liveness, cmap="RdYlGn", vmin=0, vmax=vmax,
+                      s=16, label="sensor->motor hops")
+    plt.colorbar(sc, ax=ax2, label="path liveness (0=topological only)", fraction=0.046, pad=0.15)
+    ax.set_xlabel("cycle"); ax.set_ylabel("synapses", color="seagreen"); ax2.set_ylabel("hops")
+    ax.set_title("Connectome growth (dot color = is the path actually live?)"); ax.grid(alpha=0.3)
 
     ax = axes[1, 1]
     ax.plot(history["cycle"], np.array(history["step_time_s"]) * 1000, color="purple")
