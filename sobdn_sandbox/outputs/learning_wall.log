@@ -1,0 +1,26 @@
+======================================================================
+SOBDN SANDBOX -- LEARNING WALL EXPERIMENT (population capped at 150 to isolate the learning question from population runaway)
+======================================================================
+Cycles: 20000 | seed=7
+
+cycle   2500 | pop= 150 | mean_dist(window)= 17.22 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0113 mean_v_thresh=0.859
+cycle   5000 | pop= 150 | mean_dist(window)= 24.14 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0113 mean_v_thresh=0.861
+cycle   7500 | pop= 150 | mean_dist(window)= 22.58 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0113 mean_v_thresh=0.861
+cycle  10000 | pop= 150 | mean_dist(window)= 25.70 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0112 mean_v_thresh=0.862
+cycle  12500 | pop= 150 | mean_dist(window)= 25.26 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0111 mean_v_thresh=0.863
+cycle  15000 | pop= 150 | mean_dist(window)= 33.46 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0111 mean_v_thresh=0.863
+cycle  17500 | pop= 150 | mean_dist(window)= 37.87 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0111 mean_v_thresh=0.863
+cycle  20000 | pop= 150 | mean_dist(window)= 27.08 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | mean_spontaneity=0.0111 mean_v_thresh=0.863
+
+Total wall-clock: 264.0s (75.8 cycles/s average)
+
+======================================================================
+FIRST HALF vs SECOND HALF OF THE RUN
+======================================================================
+Mean distance-to-food:  first half=20.85  second half=30.90  (did not improve)
+Food eaten:             first half=0  second half=0  (did not improve)
+Mean direct sensor->motor weight: first=0.000 -> last=0.000
+Mean spontaneity (genome): first=0.0137 -> last=0.0111
+Mean v_thresh (genome):    first=0.877 -> last=0.863
+
+Saved plot to outputs/learning_wall.png

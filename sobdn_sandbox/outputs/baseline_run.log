@@ -1,0 +1,18 @@
+======================================================================
+SOBDN SANDBOX -- BASELINE EXPERIMENT: EMBODIED FOOD-SEEKING
+======================================================================
+Cycles: 6000 | seed=1 | grid=40^3
+Seed population: {'sensor': 3, 'motor': 2, 'inter': 40}
+
+cycle    500 | pop=   43 (inter=   38) | mean_E= 11.04 | edges=   233 | path=1 | dist_food= 20.82 | eaten=  0 | hazard_hits=  0 | step_ms=4.47
+cycle   1000 | pop=  104 (inter=   99) | mean_E= 12.77 | edges=   552 | path=1 | dist_food= 26.84 | eaten=  0 | hazard_hits=  0 | step_ms=13.68
+cycle   1500 | pop=  220 (inter=  215) | mean_E= 12.78 | edges=  1170 | path=1 | dist_food= 28.63 | eaten=  0 | hazard_hits=  0 | step_ms=19.18
+cycle   2000 | pop=  445 (inter=  440) | mean_E= 11.69 | edges=  2301 | path=1 | dist_food= 27.55 | eaten=  0 | hazard_hits=  0 | step_ms=43.14
+cycle   2500 | pop=  786 (inter=  781) | mean_E= 10.93 | edges=  3984 | path=1 | dist_food= 37.04 | eaten=  0 | hazard_hits=  0 | step_ms=101.53
+cycle   3000 | pop= 1283 (inter= 1278) | mean_E= 10.51 | edges=  6303 | path=1 | dist_food= 36.46 | eaten=  0 | hazard_hits=  0 | step_ms=142.70
+cycle   3500 | pop= 1899 (inter= 1894) | mean_E= 10.19 | edges=  9486 | path=1 | dist_food= 36.21 | eaten=  0 | hazard_hits=  0 | step_ms=257.83
+cycle   4000 | pop= 2696 (inter= 2691) | mean_E=  9.86 | edges= 13411 | path=1 | dist_food= 33.24 | eaten=  0 | hazard_hits=  0 | step_ms=585.81
+
+[Run manually stopped after cycle 4000: population growth and per-cycle
+cost were still compounding with no sign of leveling off (585.81 ms/cycle
+and climbing), and the trend was already unambiguous. See FINDINGS.md.]

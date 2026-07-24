@@ -1,0 +1,23 @@
+======================================================================
+SOBDN SANDBOX -- SCALING / PERFORMANCE STRESS TEST
+======================================================================
+
+-- spatial-hash neighbor search --
+  n=    55 edges=    218 |      8.63 ms/cycle |    115.9 cycles/s
+  n=   105 edges=    425 |     17.66 ms/cycle |     56.6 cycles/s
+  n=   205 edges=    858 |     55.38 ms/cycle |     18.1 cycles/s  <-- below usability threshold
+  n=   405 edges=   1699 |    164.03 ms/cycle |      6.1 cycles/s  <-- below usability threshold
+  n=   805 edges=   3207 |    464.42 ms/cycle |      2.2 cycles/s  <-- below usability threshold
+  n=  1605 edges=   6108 |   1947.01 ms/cycle |      0.5 cycles/s  <-- below usability threshold
+
+-- naive O(N^2) neighbor search (capped -- gets slow fast) --
+  n=    55 edges=    218 |      9.01 ms/cycle |    111.0 cycles/s
+  n=   105 edges=    425 |     18.78 ms/cycle |     53.2 cycles/s
+  n=   205 edges=    859 |     52.52 ms/cycle |     19.0 cycles/s  <-- below usability threshold
+  n=   405 edges=   1699 |    157.56 ms/cycle |      6.3 cycles/s  <-- below usability threshold
+  n=   805 edges=   3218 |    490.10 ms/cycle |      2.0 cycles/s  <-- below usability threshold
+
+[Naive series manually stopped after n=805: 5 of 6 matched pairs already
+showed the spatial hash providing ~1.0x speedup (no real benefit) under
+this benchmark's dense-cluster seeding -- see FINDINGS.md for the
+comparison table and why clustering defeats fixed-bucket-size hashing.]
