@@ -55,9 +55,11 @@ def direct_sensor_motor_weights(world: World):
 
 def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
         fixed_spontaneity=None, label: str = "evolvable-spontaneity", verbose: bool = True,
-        disable_reward: bool = False, continuous_shaping: bool = False):
+        disable_reward: bool = False, continuous_shaping: bool = False,
+        fixed_v_thresh=None, fixed_mp_beta=None):
     world = World(seed=seed, n_seed_interneurons=40, max_pop=max_pop, fixed_spontaneity=fixed_spontaneity,
-                  disable_reward=disable_reward, continuous_shaping=continuous_shaping)
+                  disable_reward=disable_reward, continuous_shaping=continuous_shaping,
+                  fixed_v_thresh=fixed_v_thresh, fixed_mp_beta=fixed_mp_beta)
 
     if verbose:
         print("=" * 70)
@@ -157,7 +159,13 @@ def run(seed: int = SEED, n_cycles: int = N_CYCLES, max_pop: int = MAX_POP,
 
 
 def plot(history, out_dir="outputs", filename="learning_wall.png", suptitle=None):
-    fig, axes = plt.subplots(2, 3, figsize=(18, 9))
+    # 3x3 so every tracked genome trait (spontaneity, v_thresh, mp_beta,
+    # mp_gamma) has a visible line -- a prior version of this plot only
+    # showed spontaneity/v_thresh even after mp_beta/mp_gamma were added to
+    # `history`, so a claim about mp_beta drift wasn't checkable against
+    # its own chart. Don't reintroduce that gap: any new tracked field
+    # belongs on a panel here, not just in the printed summary.
+    fig, axes = plt.subplots(3, 3, figsize=(18, 13))
     fig.suptitle(suptitle or "SOBDN Sandbox -- Learning Wall Experiment (population capped)",
                  fontsize=15, fontweight="bold")
 
@@ -198,12 +206,24 @@ def plot(history, out_dir="outputs", filename="learning_wall.png", suptitle=None
     ax2.plot(history["cycle"], history["mean_v_thresh"], color="teal", alpha=0.7, label="mean v_thresh")
     ax.set_xlabel("cycle"); ax.set_ylabel("mean spontaneity", color="purple")
     ax2.set_ylabel("mean v_thresh", color="teal")
-    ax.set_title("Population-mean genome drift"); ax.grid(alpha=0.3)
+    ax.set_title("Genome drift: spontaneity vs v_thresh"); ax.grid(alpha=0.3)
 
     ax = axes[1, 2]
+    if "mean_mp_beta" in history:
+        ax.plot(history["cycle"], history["mean_mp_beta"], color="crimson", label="mean mp_beta")
+        ax2 = ax.twinx()
+        ax2.plot(history["cycle"], history["mean_mp_gamma"], color="darkgoldenrod", alpha=0.7, label="mean mp_gamma")
+        ax.set_xlabel("cycle"); ax.set_ylabel("mean mp_beta (more negative = facilitating)", color="crimson")
+        ax2.set_ylabel("mean mp_gamma", color="darkgoldenrod")
+    ax.set_title("Genome drift: mp_beta vs mp_gamma"); ax.grid(alpha=0.3)
+
+    ax = axes[2, 0]
     ax.plot(history["cycle"], history["population"], color="slategray")
     ax.set_xlabel("cycle"); ax.set_ylabel("population")
     ax.set_title("Population (should be flat at the cap)"); ax.grid(alpha=0.3)
+
+    axes[2, 1].axis("off")
+    axes[2, 2].axis("off")
 
     plt.tight_layout(rect=(0, 0, 1, 0.95))
     import os

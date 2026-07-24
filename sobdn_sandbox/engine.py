@@ -235,7 +235,8 @@ class World:
     def __init__(self, grid: int = GRID, n_seed_interneurons: int = 40, seed: Optional[int] = None,
                  use_spatial_hash: bool = True, freeze_population: bool = False, max_pop: int = MAX_POP,
                  fixed_spontaneity: Optional[float] = None, disable_reward: bool = False,
-                 continuous_shaping: bool = False):
+                 continuous_shaping: bool = False, fixed_v_thresh: Optional[float] = None,
+                 fixed_mp_beta: Optional[float] = None):
         self.grid = grid
         self.max_pop = max_pop
         # Control: forces reward/pain to 0 everywhere, always, so the
@@ -250,13 +251,19 @@ class World:
         # instead of the coarser fixed APPROACH_REWARD bonus for any
         # improvement at all.
         self.continuous_shaping = continuous_shaping
-        # When set, every neuron's spontaneity is pinned to this value at
-        # spawn and at mitosis, instead of being a heritable, individually
-        # mutable/selectable gene. Isolates whether the "tragedy of the
-        # commons" dynamic found in FINDINGS.md (individual energy
-        # selection eroding the population-level exploration rate) is
-        # actually the blocker, independent of any other change.
+        # When set, every neuron's {spontaneity, v_thresh, mp_beta} gene is
+        # pinned to that value at spawn and at mitosis (mutation-immune),
+        # instead of being heritable and individually selectable. Used to
+        # isolate which "excitability lever" absorbs the population's
+        # get-cheaper selection pressure: pinning spontaneity alone showed
+        # v_thresh reliably climbs +0.037 to +0.041 across three independent
+        # reward regimes (FINDINGS.md) while mp_beta moved inconsistently --
+        # pinning spontaneity AND v_thresh together isolates mp_beta as the
+        # only remaining lever, so a consistent drift (or its absence) is no
+        # longer confounded by which other gene happened to be free.
         self.fixed_spontaneity = fixed_spontaneity
+        self.fixed_v_thresh = fixed_v_thresh
+        self.fixed_mp_beta = fixed_mp_beta
         self.rng = random.Random(seed)
         np_seed = None if seed is None else seed
         self._np_rng = np.random.default_rng(np_seed)
@@ -307,9 +314,16 @@ class World:
             self._spawn(pos, "inter", random_genome(self.rng))
 
     # -- bookkeeping -------------------------------------------------
-    def _spawn(self, pos, kind, genome, energy: float = 5.0) -> Neuron:
+    def _pin_fixed_genes(self, genome: dict) -> None:
         if self.fixed_spontaneity is not None:
             genome["spontaneity"] = self.fixed_spontaneity
+        if self.fixed_v_thresh is not None:
+            genome["v_thresh"] = self.fixed_v_thresh
+        if self.fixed_mp_beta is not None:
+            genome["mp_beta"] = self.fixed_mp_beta
+
+    def _spawn(self, pos, kind, genome, energy: float = 5.0) -> Neuron:
+        self._pin_fixed_genes(genome)
         nid = next(self._id_counter)
         n = Neuron(id=nid, pos=np.array(pos, dtype=float), kind=kind, genome=genome, energy=energy)
         self.neurons[nid] = n
@@ -584,8 +598,7 @@ class World:
     def _mitosis(self, parent: Neuron) -> Neuron:
         parent.energy /= 2.0
         child_genome = mutate_genome(parent.genome, self.rng)
-        if self.fixed_spontaneity is not None:
-            child_genome["spontaneity"] = self.fixed_spontaneity
+        self._pin_fixed_genes(child_genome)
         child_pos = np.clip(parent.pos + self._np_rng.normal(0, 0.75, 3), 0, self.grid - 1)
         return Neuron(id=next(self._id_counter), pos=child_pos, kind="inter",
                       genome=child_genome, energy=parent.energy)

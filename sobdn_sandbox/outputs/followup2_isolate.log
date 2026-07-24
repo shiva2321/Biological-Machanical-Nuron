@@ -1,0 +1,34 @@
+======================================================================
+SOBDN SANDBOX -- LEARNING WALL EXPERIMENT [E: spontaneity+v_thresh fixed, mp_beta isolated]
+(population capped at 150, spontaneity fixed at 0.02)
+======================================================================
+Cycles: 20000 | seed=7
+
+cycle   2500 | pop= 150 | mean_dist(window)= 30.65 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.081 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle   5000 | pop= 150 | mean_dist(window)= 31.25 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.001 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle   7500 | pop= 150 | mean_dist(window)= 22.53 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.049 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle  10000 | pop= 150 | mean_dist(window)= 15.74 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.025 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle  12500 | pop= 150 | mean_dist(window)= 17.77 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.000 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle  15000 | pop= 150 | mean_dist(window)= 19.20 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.000 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle  17500 | pop= 150 | mean_dist(window)= 25.12 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.028 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+cycle  20000 | pop= 150 | mean_dist(window)= 22.45 | eaten(window)= 0 | eaten(total)=  0 | direct_edges= 0 mean_w=0.000 | path_hops=2 live=0.000 | mean_spontaneity=0.0200 mean_v_thresh=0.880
+
+Total wall-clock: 91.9s (217.5 cycles/s average)
+
+======================================================================
+FIRST HALF vs SECOND HALF OF THE RUN [E: spontaneity+v_thresh fixed, mp_beta isolated]
+======================================================================
+Mean distance-to-food:  first half=24.41  second half=20.80  (improved)
+Food eaten:             first half=0  second half=0  (did not improve)
+Mean direct sensor->motor weight: first=0.000 -> last=0.000
+Mean spontaneity (genome): first=0.0200 -> last=0.0200
+Mean v_thresh (genome):    first=0.880 -> last=0.880
+Mean mp_beta (genome, intrinsic-plasticity direction): first=-0.1227 -> last=-0.1234 (more negative = more facilitating/easier to keep firing)
+Mean mp_gamma (genome, adaptation decay): first=0.8831 -> last=0.8754
+Fraction of logged cycles with ANY sensor->motor path:  100.0%
+Fraction of logged cycles with a LIVE sensor->motor path: 32.5%
+
+Saved plot to outputs/followup2_E_mp_beta_isolated.png
+
+mp_beta first/last: -0.12272028137641006 -0.12336366636161278
+mp_gamma first/last: 0.8830520853068118 0.875447205441474

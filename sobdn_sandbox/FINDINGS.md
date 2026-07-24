@@ -507,6 +507,111 @@ sensitive to which single trajectory got lucky: no amount of noise
 tuning or reward-density tuning tried so far has produced one single
 successful food-reaching event.
 
+## Third follow-up round: a replication, a reconciliation, and a clean isolation
+
+A second review pass caught one thing to reconcile (a plot whose trend
+line and summary table read in opposite directions), one thing that
+wasn't actually checkable from its own chart (fixed in round two's plot
+but not yet re-rendered for the runs already committed), and one design
+improvement on the mp_beta test: pinning spontaneity alone doesn't
+isolate mp_beta, because v_thresh is still free to absorb the same
+selection pressure. All three addressed.
+
+### 7. The v_thresh pattern is real, consistent, and worth naming on its own
+
+Pulled the exact numbers across every run in this document rather than
+eyeballing plots:
+
+| run | spontaneity | v_thresh: first -> last | delta |
+|---|---|---:|---:|
+| A (evolvable, original) | evolvable | 0.877 -> 0.863 | -0.014 |
+| A2 (evolvable, replica) | evolvable | 0.877 -> 0.863 | -0.014 |
+| B (fixed, binary shaping) | fixed 0.02 | 0.882 -> 0.923 | **+0.041** |
+| C (fixed, continuous shaping) | fixed 0.02 | 0.875 -> 0.912 | **+0.037** |
+| D (fixed, no reward) | fixed 0.02 | 0.870 -> 0.910 | **+0.040** |
+
+This is a real, three-for-three replicated pattern, and it is more
+decisive than any of the reward-related findings in this document: every
+run with spontaneity fixed shows v_thresh climbing by a consistent
++0.037 to +0.041, *regardless of reward regime* (binary, continuous, or
+none at all) -- confirming it's a metabolic/selection effect, not a
+reward-learning effect. Every run with spontaneity evolvable shows
+v_thresh flat-to-slightly-down, identically between A and its replica
+A2. Read together with spontaneity's own erosion, this looks like one
+underlying "reduce firing cost" selection pressure with more than one
+lever to express itself through -- when spontaneity is free to fall, it
+absorbs the pressure; when it's pinned, v_thresh climbs instead.
+
+### 8. mp_beta, properly isolated
+
+Pinning spontaneity alone doesn't isolate mp_beta -- v_thresh is still
+free in that setup, and per point 7 it's the more consistent absorber of
+this pressure. The existing mp_beta numbers with only spontaneity fixed
+are, honestly, mixed rather than clean: D (spontaneity fixed, no reward)
+moved mp_beta slightly *more* facilitating (-0.1295 -> -0.1326, delta
+-0.0031), while C (spontaneity fixed, continuous shaping) moved it
+notably *less* facilitating (-0.1277 -> -0.1167, delta +0.0110) -- the
+same "spontaneity fixed" condition producing opposite-sign mp_beta drift
+depending on reward regime. Not a clean signal.
+
+Added `fixed_v_thresh` alongside `fixed_spontaneity` and reran with
+*both* pinned (spontaneity=0.02, v_thresh=0.88), leaving mp_beta and
+mp_gamma as the only evolvable excitability-related genes -- a clean,
+unconfounded test. Result: **mp_beta barely moved: -0.1227 -> -0.1234,
+a delta of -0.0007** -- an order of magnitude smaller than v_thresh's
+consistent ~+0.04 climb, and smaller than any of the mixed
+spontaneity-only-fixed results above. With the two known-mobile levers
+locked down and mp_beta genuinely the last one standing, it still didn't
+move. That's real evidence against trait substitution reaching mp_beta,
+not just an absence of evidence for it -- supporting the original
+mechanistic read (mp_beta shapes existing input into spikes rather than
+manufacturing costly spikes from nothing, so it doesn't carry the same
+per-spike energy tax spontaneity and, apparently, v_thresh's absence
+does) over "it just hadn't had its turn yet."
+
+The genome-drift panel in `learning_wall_experiment.py`'s `plot()` only
+showed spontaneity and v_thresh even after mp_beta/mp_gamma were added to
+`history` -- a real gap (a claim in this document that wasn't checkable
+against its own chart). Fixed: the plot is now 3x3 with a dedicated
+mp_beta/mp_gamma panel, and the A2/C/D charts already committed were
+regenerated (deterministically, same numbers) so every chart in this
+document is now self-verifying against the text.
+
+### 9. Reconciling the continuous-shaping trend line vs. the summary table
+
+The continuous-shaping plot's dashed trend line and the first/second-half
+table row read in opposite directions (trend line improving, table
+worse) -- both are real, correctly-computed statistics that can
+legitimately disagree on a series this non-monotonic. The trend line is
+an ordinary-least-squares fit through all 40 logged points; the table
+compares the *mean* of the first 20 points to the *mean* of the last 20.
+C's distance series swings 23.68 -> 23.08 -> 12.88 -> 21.90 -> 26.33 ->
+25.71 -> 15.03 -> 18.36 across its 8 printed checkpoints (finer-grained
+underneath) -- a regression line anchored near the high early points and
+the lower late points can slope down even while the second-half *mean*
+sits above the first-half mean, because two large mid-run spikes
+(26.33, 25.71) pull the second-half average up without moving the
+endpoint-driven regression slope the same way. Neither statistic is
+wrong; they're answering different questions ("what's the linear trend"
+vs. "was the back half worse on average"), and on a curve this noisy
+they don't have to agree. Between the two, the first/second-half mean is
+the one used for the verdicts in this document, since a single OLS slope
+on 40 points this non-monotonic is more sensitive to exactly which
+points happen to sit at the ends -- but this is a real ambiguity worth
+flagging rather than silently picking one, and neither is as trustworthy
+as `food_eaten`, which is unambiguous by construction.
+
+Worth noting on its own: `n_direct_edges` stays at 0 throughout C's run
+-- continuous shaping's liveness gain (30% -> 60%) came entirely from
+strengthening the existing multi-hop path, not from growing a shortcut.
+Of five conditions with full instrumentation (A, A2, B, C, D), only B
+ever produced a direct edge at all. That's worth being honest about: the
+0.205 direct-edge weight from B is one idiosyncratic route to a small
+improvement, not a generalizable mechanism -- C found a *different*
+route (strengthening length-4 relay) to a bigger improvement on the same
+metrics. "Grow a direct edge" was never load-bearing in the story; it
+just happened to be the visible artifact in one run.
+
 ## What this suggests
 
 - The reward-modulated (three-factor) plasticity piece is the strongest
@@ -514,7 +619,12 @@ successful food-reaching event.
   it just hasn't been given a chain short/easy enough to demonstrate it
   yet, and the ablation shows *more noise alone doesn't shorten that
   chain*. Denser reward (continuous shaping) helps on every measurable
-  axis except the one that actually matters (food eaten stays zero).
+  axis except the one that actually matters (food eaten stays zero) --
+  and it did so by strengthening an existing multi-hop relay, not by
+  growing a shortcut: of five fully-instrumented runs, only one (B) ever
+  grew a direct sensor->motor edge at all, so that 0.205 weight was one
+  idiosyncratic route to a small improvement, not a generalizable
+  mechanism worth relying on.
 - The structural growth piece reliably does *something* (a connectome
   forms, population responds to energy) but "something" is not the same
   as "something useful." The precise gap, now measured rather than
@@ -535,10 +645,23 @@ successful food-reaching event.
   measurably falls under individual selection) but turned out to be a
   secondary effect, not the bottleneck -- a good reminder that a
   mechanistically clean story can still be the wrong explanation until
-  you've actually removed the thing you think is causing it. mp_beta,
-  the gene closest in spirit to a proper homeostatic mechanism, did not
-  show the same erosion, for a plausible structural reason (it doesn't
-  manufacture costly spikes from nothing the way spontaneity does).
+  you've actually removed the thing you think is causing it. Following it
+  further turned up something broader than the original framing: it isn't
+  just that spontaneity erodes, it's that **one underlying "reduce firing
+  cost" selection pressure has more than one lever to express itself
+  through**. Pin spontaneity and v_thresh climbs instead -- a clean,
+  three-for-three replication (runs B, C, D) that holds regardless of
+  reward regime, which is itself the evidence that it's a metabolic
+  effect, not a reward-learning one. Only once *both* spontaneity and
+  v_thresh are pinned does the pressure run out of levers, and mp_beta,
+  tested in exactly that fully-isolated condition, stayed essentially
+  flat (delta -0.0007, an order of magnitude below v_thresh's climb) --
+  real evidence it's structurally different (it shapes existing input
+  into spikes rather than manufacturing costly ones from nothing) rather
+  than a gene that just hadn't had its turn yet. The general caution:
+  don't call a heritable trait "safe from selection pressure" without
+  locking down its neighbors first, since the pressure will happily move
+  house.
 - Across every condition tested -- evolvable spontaneity, fixed
   spontaneity, reward disabled, continuous shaping, two different seeds'
   worth of runs -- **food eaten never once left zero.** Distance-to-food
@@ -562,7 +685,12 @@ after both rounds of follow-up checks:
    generic weight boost, since a generic boost would also inflate dead
    ends that were never near reward), or Turrigiano-style per-neuron
    homeostatic thresholding instead of leaving excitability to a
-   heritable gene under uncertain selection.
+   heritable gene under uncertain selection -- no longer just a
+   theoretical preference: the trait-substitution result above (points
+   7-8) is direct evidence that heritable excitability genes don't stay
+   put under selection, they migrate to whichever one is left
+   unconstrained, which is exactly the failure mode a fixed regulatory
+   rule sidesteps.
 2. Finish the vectorization pass (NumPy arrays over the population)
    before scaling further -- both to remove the remaining implementation
    confound from any future scaling claim, and because it would make

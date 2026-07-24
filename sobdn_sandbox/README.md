@@ -49,6 +49,16 @@ See `FINDINGS.md` for what actually happened when this was run.
   and a properly-signed continuous potential-based reward-shaping
   experiment (Ng, Harada & Russell 1999) against the existing binary
   shaping rule. See FINDINGS.md for the results.
+- `mp_beta_isolation.py` -- the clean version of the mp_beta check:
+  pinning spontaneity alone still leaves v_thresh free to absorb the same
+  selection pressure (see FINDINGS.md point 7), so this pins *both*
+  `fixed_spontaneity` and `fixed_v_thresh`, leaving mp_beta/mp_gamma as
+  the only evolvable excitability genes left -- an unconfounded test of
+  whether mp_beta erodes the way spontaneity did. It doesn't.
+- `regen_plots.py` -- one-off, deterministic re-run of the A2/D/C
+  conditions used only to regenerate their charts after `plot()` gained a
+  dedicated mp_beta/mp_gamma panel (same seed/params -> same numbers,
+  updated figure). Kept for provenance; not part of the normal run order.
 - `outputs/` -- logs, plots, and profiler output from actual runs.
 
 ## Running it
@@ -60,7 +70,13 @@ python3 scaling_test.py            # performance wall
 python3 learning_wall_experiment.py  # learning wall (population capped)
 python3 spontaneity_ablation.py    # does fixing exploration noise help?
 python3 followup_checks.py         # zero-reward control, mp_beta drift, reward shaping
+python3 mp_beta_isolation.py       # does mp_beta drift once spontaneity AND v_thresh are pinned?
 ```
+
+`learning_wall_experiment.py`'s `World`/`run()` also accept `fixed_v_thresh`
+and `fixed_mp_beta` (alongside `fixed_spontaneity`) for pinning any subset
+of the three excitability-related genome traits when isolating one from
+the others.
 
 Each script prints periodic status lines, explicit pass/fail-style
 criteria at the end, and saves a plot to `outputs/`.
